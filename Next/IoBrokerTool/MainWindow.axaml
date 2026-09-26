@@ -1,0 +1,299 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:terminal="using:AvaloniaTerminal"
+        x:Class="IoBrokerTool.MainWindow"
+        Title="ioBroker Studio"
+        Width="1180" Height="760"
+        MinWidth="760" MinHeight="480"
+        WindowStartupLocation="CenterScreen"
+        Background="#0B1018">
+  <Grid RowDefinitions="Auto,*,Auto">
+    <Border Grid.Row="0" Background="#0E1622" BorderBrush="#223047"
+            BorderThickness="0,0,0,1" Padding="28,18">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+          <Border Width="46" Height="46" CornerRadius="13" Background="#18A999">
+            <TextBlock Text="iO" FontWeight="Black" FontSize="20"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="White" />
+          </Border>
+          <StackPanel>
+            <TextBlock Text="ioBroker Studio" FontWeight="Bold" FontSize="22"
+                       Foreground="#F7FAFD" />
+            <TextBlock Text="SYSTEM MANAGEMENT CONSOLE" FontSize="10"
+                       Foreground="#6E829D" />
+          </StackPanel>
+        </StackPanel>
+
+        <Border Grid.Column="1" Margin="42,0,24,0" Background="#111B29"
+                BorderBrush="#26364C" BorderThickness="1" CornerRadius="12"
+                Padding="16,10" MaxWidth="690" HorizontalAlignment="Stretch">
+          <Grid ColumnDefinitions="2*,1.25*,82,2*,Auto" ColumnSpacing="10">
+            <TextBox x:Name="HostBox" PlaceholderText="IP oder Hostname"
+                     ToolTip.Tip="IP-Adresse oder Netzwerkname des Linux-Rechners, auf dem ioBroker läuft." />
+            <TextBox Grid.Column="1" x:Name="UserBox" PlaceholderText="Benutzer"
+                     ToolTip.Tip="Linux-Benutzer für die SSH-Anmeldung, zum Beispiel pi oder dein eigener Benutzername." />
+            <TextBox Grid.Column="2" x:Name="PortBox" PlaceholderText="Port" Text="22"
+                     ToolTip.Tip="SSH-Port des Zielsystems. Normalerweise ist das Port 22." />
+            <TextBox Grid.Column="3" x:Name="PasswordBox" PlaceholderText="SSH-Passwort"
+                     PasswordChar="●"
+                     ToolTip.Tip="Passwort für die SSH-/PuTTY-Anmeldung. Ein sudo-Passwort wird bei Bedarf separat abgefragt." />
+            <Button Grid.Column="4" x:Name="TestButton" Classes="primary"
+                    Content="Verbinden" Click="OnTestConnection"
+                    ToolTip.Tip="Prüft SSH-Verbindung und Server-Identität mit den eingetragenen Zugangsdaten." />
+          </Grid>
+        </Border>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12"
+                    VerticalAlignment="Center">
+          <CheckBox x:Name="RememberPasswordBox" Content="Passwort merken"
+                    Foreground="#AAB7C8"
+                    ToolTip.Tip="Speichert das SSH-Passwort verschlüsselt für dein aktuelles Windows-Benutzerkonto." />
+          <Border x:Name="ConnectionPill" Background="#263141" CornerRadius="14"
+                  Padding="12,6"
+                  ToolTip.Tip="Zeigt, ob die SSH-Verbindung und die Identität des Zielsystems erfolgreich geprüft wurden.">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <Ellipse x:Name="ConnectionDot" Width="8" Height="8"
+                       Fill="#7D8A9B" VerticalAlignment="Center" />
+              <TextBlock x:Name="ConnectionText" Text="Nicht verbunden"
+                         Foreground="#C3CDDA" FontSize="12" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="1">
+      <StackPanel Margin="30,26,30,20" Spacing="20">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel>
+            <TextBlock Text="Systemzentrale" FontSize="30" FontWeight="Bold"
+                       Foreground="#F5F8FC" />
+            <TextBlock Text="Wartung, Sicherung und Installation – an einem Ort."
+                       Classes="muted" FontSize="14" Margin="0,5,0,0" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="secondary" Padding="22,12"
+                  Click="OnOpenHelp"
+                  ToolTip.Tip="Öffnet eine einfache Erklärung aller Funktionen und Schaltflächen.">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <TextBlock Text="?" FontSize="20" FontWeight="Bold" />
+              <TextBlock Text="HILFE &amp; ANLEITUNG" FontWeight="Bold" />
+            </StackPanel>
+          </Button>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,*,*" RowDefinitions="Auto,Auto"
+              ColumnSpacing="16" RowSpacing="16">
+          <Border Grid.Row="0" Grid.Column="0" Classes="card">
+            <StackPanel Spacing="13">
+              <Grid ColumnDefinitions="*,Auto">
+                <Border Width="42" Height="42" CornerRadius="11" Background="#173F3B">
+                  <TextBlock Text="▣" FontSize="23" Foreground="#45D4C0"
+                             HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <Border Grid.Column="1" Background="#193329" CornerRadius="10" Padding="9,4">
+                  <TextBlock Text="SICHER" Foreground="#71D5A4" FontSize="10"
+                             FontWeight="Bold" />
+                </Border>
+              </Grid>
+              <TextBlock Text="Backup" Classes="title" />
+              <TextBlock Text="Schneller Checkpoint für Experimente – ohne erneuten Upload oder Entpacken sofort zurückrollen."
+                         Classes="muted" TextWrapping="Wrap" MinHeight="54" />
+              <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Classes="primary" Content="Checkpoint" Click="OnCreateCheckpoint"
+                          ToolTip.Tip="Erstellt direkt auf Linux eine schnelle Sicherung von iobroker-data und node_modules." />
+                  <Button Classes="primary" Content="Wiederherstellen" Click="OnChooseRestore"
+                          ToolTip.Tip="Setzt ioBroker aus dem schnellen Linux-Checkpoint oder einer Windows-Backup-Datei zurück." />
+                </StackPanel>
+                <CheckBox x:Name="DownloadCheckpointBox"
+                          Content="Zusätzlich nach Windows herunterladen"
+                          Foreground="#AAB7C8" FontSize="11"
+                          ToolTip.Tip="Lädt den neuen Checkpoint zusätzlich als dauerhafte Datei auf diesen Windows-PC." />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Button Classes="secondary" Content="Ordner" Click="OnOpenBackupFolder"
+                          ToolTip.Tip="Öffnet den Windows-Ordner mit deinen heruntergeladenen Sicherungen." />
+                </StackPanel>
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Row="0" Grid.Column="1" Classes="card">
+            <StackPanel Spacing="13">
+              <Grid ColumnDefinitions="*,Auto">
+                <Border Width="42" Height="42" CornerRadius="11" Background="#273854">
+                  <TextBlock Text="✦" FontSize="22" Foreground="#82AFFF"
+                             HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <Border Grid.Column="1" Background="#252F46" CornerRadius="10" Padding="9,4">
+                  <TextBlock Text="BEST EFFORT" Foreground="#A9BEFF" FontSize="10"
+                             FontWeight="Bold" />
+                </Border>
+              </Grid>
+              <TextBlock Text="Reparatur &amp; Upgrade" Classes="title" />
+              <TextBlock Text="Node.js, Berechtigungen, JS-Controller, native Module und Adapter intelligent reparieren."
+                         Classes="muted" TextWrapping="Wrap" MinHeight="54" />
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Button Classes="primary" HorizontalAlignment="Left"
+                        Content="Reparatur starten" Click="OnRepair"
+                        ToolTip.Tip="Prüft und repariert Node.js, Rechte, JS-Controller, native Module und Adapter." />
+                <Button Classes="secondary" HorizontalAlignment="Left"
+                        Content="Fehler anzeigen" Click="OnShowErrors"
+                        ToolTip.Tip="Liest ioBroker- und Systemprotokolle rein diagnostisch und zeigt echte Fehler mit deutschen Erklärungen." />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Row="0" Grid.Column="2" Classes="card" BorderBrush="#2C8479"
+                  Padding="0" ClipToBounds="True"
+                  ToolTip.Tip="Vollwertiges SSH-Terminal. Nach „Verbinden“ hier hineinklicken und Linux-Befehle direkt eingeben.">
+            <Grid RowDefinitions="Auto,*" MinHeight="205">
+              <Border Background="#101A24" Padding="12,9"
+                      BorderBrush="#23443F" BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="9">
+                  <TextBlock Text="&gt;_" FontSize="14" FontWeight="Bold"
+                             Foreground="#55E1C8" VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="1" Text="INTEGRIERTES TERMINAL"
+                             FontWeight="Bold" FontSize="11" Foreground="#DCE5F1"
+                             VerticalAlignment="Center" />
+                  <TextBlock Grid.Column="2" x:Name="TerminalStatus"
+                             Text="Nicht verbunden" FontSize="10"
+                             Foreground="#8FA1B8" VerticalAlignment="Center" />
+                  <Button Grid.Column="3" x:Name="DetachTerminalButton"
+                          Content="↗" Padding="8,2" Click="OnDetachTerminal"
+                          ToolTip.Tip="Terminal in ein eigenes Fenster lösen. Beim Schließen wird es wieder eingebettet." />
+                </Grid>
+              </Border>
+              <ContentControl Grid.Row="1" x:Name="TerminalHost">
+                <terminal:TerminalControl x:Name="TerminalView"
+                                          FontFamily="Cascadia Mono,Consolas,monospace"
+                                          FontSize="11"
+                                          Background="#05090E"
+                                          RightClickAction="CopyOrPaste"
+                                          ToolTip.Tip="Linux-Terminal: Text markieren und rechtsklicken kopiert. Ohne Markierung fügt ein Rechtsklick die Zwischenablage ein." />
+              </ContentControl>
+            </Grid>
+          </Border>
+
+          <Border Grid.Row="1" Grid.Column="0" Classes="card">
+            <StackPanel Spacing="13">
+              <Border Width="42" Height="42" CornerRadius="11" Background="#4A3421"
+                      HorizontalAlignment="Left">
+                <TextBlock Text="⬇" FontSize="21" Foreground="#FFB96A"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <TextBlock Text="Neuinstallation" Classes="title" />
+              <TextBlock Text="Raspberry Pi Imager öffnen oder ioBroker mit dem jeweils aktuellen offiziellen Installer installieren."
+                         Classes="muted" TextWrapping="Wrap" MinHeight="54" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Classes="secondary" Content="Pi Imager" Click="OnOpenImager"
+                        ToolTip.Tip="Öffnet den offiziellen Raspberry Pi Imager zum Vorbereiten einer SD-Karte." />
+                <Button Classes="primary" Content="ioBroker installieren" Click="OnInstall"
+                        ToolTip.Tip="Installiert ioBroker auf einem vorbereiteten 64-Bit-Linux ohne vorhandene Installation." />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Row="1" Grid.Column="1" Classes="card">
+            <StackPanel Spacing="13">
+              <Border Width="42" Height="42" CornerRadius="11" Background="#342C50"
+                      HorizontalAlignment="Left">
+                <TextBlock Text="⌁" FontSize="24" Foreground="#B99AFF"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <TextBlock Text="Netzwerk" Classes="title" />
+              <TextBlock Text="Erreichbarkeit, DNS und SSH-Port prüfen oder direkt die Router-Heimnetzseite öffnen."
+                         Classes="muted" TextWrapping="Wrap" MinHeight="54" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Classes="primary" Content="Prüfen" Click="OnNetworkProbe"
+                        ToolTip.Tip="Prüft Zieladresse, Ping und Erreichbarkeit des SSH-Ports." />
+                <Button Classes="secondary" Content="Router" Click="OnOpenRouter"
+                        ToolTip.Tip="Öffnet die Weboberfläche des automatisch erkannten Standard-Routers." />
+              </StackPanel>
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Row="1" Grid.Column="2" Classes="card">
+            <StackPanel Spacing="13">
+              <Border Width="42" Height="42" CornerRadius="11" Background="#203D50"
+                      HorizontalAlignment="Left">
+                <TextBlock Text="⇄" FontSize="22" Foreground="#75CFFF"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <TextBlock Text="Datei-Transfer" Classes="title" />
+              <TextBlock Text="Aktuelles WinSCP öffnen und eine sichere SFTP-Verbindung zum Zielsystem vorbereiten."
+                         Classes="muted" TextWrapping="Wrap" MinHeight="54" />
+              <Button Classes="primary" HorizontalAlignment="Left"
+                      Content="WinSCP öffnen" Click="OnOpenWinScp"
+                      ToolTip.Tip="Öffnet eine grafische SFTP-Verbindung für den sicheren Datei-Transfer." />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Border Classes="card" Padding="0">
+          <Grid RowDefinitions="Auto,*">
+            <Grid Background="#101824" ColumnDefinitions="*,Auto,Auto" Margin="18,13">
+              <StackPanel Orientation="Horizontal" Spacing="10">
+                <Ellipse Width="8" Height="8" Fill="#18A999" VerticalAlignment="Center" />
+                <TextBlock Text="Live-Protokoll" FontWeight="Bold" Foreground="#DCE5F1" />
+                <TextBlock x:Name="OperationLabel" Text="Bereit" Classes="muted" />
+              </StackPanel>
+              <Button Grid.Column="1" Classes="secondary" Content="Leeren"
+                      Padding="10,5" Click="OnClearLog"
+                      ToolTip.Tip="Entfernt nur die sichtbaren Einträge aus dem Live-Protokoll." />
+              <Button Grid.Column="2" Classes="secondary" Content="Speichern"
+                      Padding="10,5" Margin="8,0,0,0" Click="OnSaveLog"
+                      ToolTip.Tip="Speichert das Live-Protokoll als Datei, zum Beispiel für eine Fehlersuche." />
+            </Grid>
+            <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True"
+                     AcceptsReturn="True" TextWrapping="NoWrap"
+                     FontFamily="Cascadia Mono,Consolas,monospace"
+                     FontSize="12" MinHeight="155" MaxHeight="230"
+                     Background="#080D14" BorderThickness="0"
+                     Padding="16" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ToolTip.Tip="Zeigt dauerhaft die Ausgaben und Ergebnisse der ausgeführten Aktionen." />
+          </Grid>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="2" Background="#0E1622" BorderBrush="#223047"
+            BorderThickness="0,1,0,0" Padding="28,10">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="ioBroker Studio · entwickelt für zuverlässige Wartung"
+                   Classes="muted" FontSize="11" />
+        <TextBlock x:Name="VersionText" Grid.Column="1" Text="Version wird geladen · 64-Bit"
+                   Classes="muted" FontSize="11" />
+      </Grid>
+    </Border>
+
+    <Border x:Name="BusyOverlay" Grid.RowSpan="3" Background="#B0000710"
+            IsVisible="False">
+      <Border Background="#142030" BorderBrush="#2D435D" BorderThickness="1"
+              CornerRadius="16" Padding="32" HorizontalAlignment="Center"
+              VerticalAlignment="Center" Width="600" MaxWidth="760">
+        <StackPanel Spacing="14">
+          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="12">
+            <TextBlock x:Name="BusyText" Text="Aktion läuft …"
+                       FontWeight="Bold" FontSize="17" Foreground="White" />
+            <TextBlock Grid.Column="1" x:Name="BusyElapsed"
+                       FontSize="14" Foreground="#8FA1B8" />
+            <TextBlock Grid.Column="2" x:Name="BusyPercent"
+                       FontWeight="Bold" FontSize="16" Foreground="#55E1C8" />
+          </Grid>
+          <ProgressBar x:Name="BusyProgress" IsIndeterminate="True" Height="7"
+                       Minimum="0" Maximum="100" Foreground="#18A999" />
+          <TextBox x:Name="BusyDetailBox" IsReadOnly="True" AcceptsReturn="True"
+                   TextWrapping="Wrap" Height="150"
+                   FontFamily="Cascadia Mono,Consolas,monospace" FontSize="11"
+                   Background="#080D14" BorderBrush="#26364C" BorderThickness="1"
+                   Padding="12" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                   ToolTip.Tip="Zeigt live, welcher Arbeitsschritt gerade auf dem Linux-System ausgeführt wird." />
+          <Button x:Name="CancelOperationButton" Classes="danger" Content="Abbrechen" HorizontalAlignment="Center"
+                  Click="OnCancelOperation"
+                  ToolTip.Tip="Fordert den kontrollierten Abbruch der gerade laufenden Aktion an." />
+        </StackPanel>
+      </Border>
+    </Border>
+  </Grid>
+</Window>

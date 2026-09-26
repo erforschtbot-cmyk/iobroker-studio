@@ -1,0 +1,148 @@
+bash -s <<'IOBROKER_TOOL_BACKUP'
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+IOB_DIR=/opt/iobroker
+ARCHIVE=/tmp/iobroker-tool-backup.tar.gz
+ROOT_MODE=none
+STOPPED=false
+RUN_UID="$(id -u)"
+RUN_GID="$(id -g)"
+
+cleanup() {
+    if [ "$STOPPED" = true ]; then
+        iobroker start >/dev/null 2>&1 || iob start >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+as_root() {
+    case "$ROOT_MODE" in
+        root) "$@" ;;
+        sudo) sudo "$@" ;;
+        doas) doas "$@" ;;
+        *) "$@" ;;
+    esac
+}
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+select_read_mode() {
+    if find "$IOB_DIR/iobroker-data" -xdev -print >/dev/null 2>&1 &&
+       { [ ! -d "$IOB_DIR/node_modules" ] || find "$IOB_DIR/node_modules" -xdev -print >/dev/null 2>&1; }; then
+        ROOT_MODE=none
+        echo "Backup liest die Daten direkt als Benutzer $(id -un); keine Rechteerhoehung noetig."
+        return 0
+    fi
+    if [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root; return 0; fi
+    if command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo; return 0; fi
+    if command -v doas >/dev/null 2>&1 && doas true; then ROOT_MODE=doas; return 0; fi
+    echo "FEHLER: Mindestens eine ioBroker-Datei ist fuer $(id -un) nicht lesbar."
+    echo "FEHLER: sudo/doas ist nicht vorhanden, nicht erlaubt oder das Passwort wurde abgelehnt."
+    echo "HINWEIS: ioBroker wurde nicht gestoppt."
+    return 1
+}
+
+[ -d "$IOB_DIR/iobroker-data" ] || {
+    echo "FEHLER: $IOB_DIR/iobroker-data wurde nicht gefunden."
+    exit 2
+}
+
+select_read_mode || exit 7
+
+# Das Downloadarchiv muss dem SSH-/SFTP-Benutzer gehoeren. Root darf einen
+# fehlenden Schreibzugriff im Temp-Verzeichnis deshalb nicht verdecken.
+if ! rm -f "$ARCHIVE" 2>/dev/null; then
+    as_root rm -f "$ARCHIVE" 2>/dev/null || {
+        echo "FEHLER: Die temporaere Backup-Datei $ARCHIVE kann nicht ersetzt werden."
+        exit 8
+    }
+fi
+: > "$ARCHIVE" 2>/dev/null || {
+    echo "FEHLER: Der angemeldete Benutzer darf $ARCHIVE nicht anlegen."
+    echo "HINWEIS: Bitte Schreibrechte/Temp-Verzeichnis des fremden Linux-Systems pruefen. ioBroker wurde nicht gestoppt."
+    exit 8
+}
+
+echo "Stoppe ioBroker ..."
+iobroker stop || iob stop || {
+    echo "FEHLER: ioBroker konnte nicht gestoppt werden."
+    exit 3
+}
+STOPPED=true
+
+echo "Erstelle Archiv (iobroker-data und node_modules) ..."
+cd "$IOB_DIR" || { echo "FEHLER: $IOB_DIR ist nicht zugaenglich."; exit 4; }
+if [ -d node_modules ]; then
+    backup_items="iobroker-data node_modules"
+else
+    echo "WARNUNG: node_modules fehlt; sichere nur iobroker-data."
+    backup_items="iobroker-data"
+fi
+for root_file in package.json package-lock.json; do
+    [ -f "$root_file" ] && backup_items="$backup_items $root_file"
+done
+total_bytes="$(as_root du -sb $backup_items 2>/dev/null | awk '{sum += $1} END {print sum}')"
+[ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null || total_bytes=1
+STATUS_FILE="$ARCHIVE.progress.$$"
+: > "$STATUS_FILE"
+started_at="$(date +%s)"
+if LC_ALL=C dd --help 2>/dev/null | grep -q progress; then
+    # shellcheck disable=SC2086
+    as_root tar -cf - $backup_items |
+        LC_ALL=C dd bs=1M status=progress 2> "$STATUS_FILE" |
+        gzip -c > "$ARCHIVE" &
+    byte_progress=true
+else
+    # shellcheck disable=SC2086
+    as_root tar -cf - $backup_items | gzip -c > "$ARCHIVE" &
+    byte_progress=false
+fi
+backup_pid=$!
+while kill -0 "$backup_pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - started_at ))
+    total_mib=$(( (total_bytes + 1048575) / 1048576 ))
+    if [ "$byte_progress" = true ]; then
+        bytes="$(tr '\r' '\n' < "$STATUS_FILE" 2>/dev/null |
+            awk '$1 ~ /^[0-9]+$/ && $2 == "bytes" {value=$1} END {print value+0}')"
+        [ -n "$bytes" ] || bytes=0
+        percent=$((10 + bytes * 82 / total_bytes))
+        [ "$percent" -gt 92 ] && percent=92
+        read_mib=$((bytes / 1048576))
+        progress "$percent" "Erstelle Backup: ${read_mib}/${total_mib} MiB gelesen, ${elapsed}s …"
+    else
+        archive_now="$(stat -c '%s' "$ARCHIVE" 2>/dev/null || printf 0)"
+        progress 10 "Erstelle Backup: Archiv bisher $((archive_now / 1048576)) MiB, ${elapsed}s …"
+    fi
+    sleep 2
+done
+wait "$backup_pid" || {
+    rm -f "$STATUS_FILE"
+    echo "FEHLER: Mindestens eine ioBroker-Datei konnte nicht gelesen oder komprimiert werden."
+    exit 9
+}
+rm -f "$STATUS_FILE"
+
+progress 93 "Prüfe das gerade erstellte Archiv einmalig …"
+tar -tzf "$ARCHIVE" >/dev/null || {
+    echo "FEHLER: Das gerade erstellte Backup-Archiv ist nicht lesbar."
+    exit 5
+}
+test -s "$ARCHIVE" || { echo "FEHLER: Das Backup-Archiv ist leer."; exit 5; }
+
+progress 96 "Starte ioBroker …"
+echo "Starte ioBroker ..."
+if iobroker start || iob start; then
+    STOPPED=false
+else
+    echo "FEHLER: Backup wurde erstellt, aber ioBroker konnte nicht gestartet werden."
+    exit 6
+fi
+
+echo "Backup erfolgreich erstellt: $ARCHIVE"
+progress 100 "Backup abgeschlossen"
+ls -lh "$ARCHIVE"
+IOBROKER_TOOL_BACKUP

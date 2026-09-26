@@ -1,0 +1,52 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="IoBrokerTool.App"
+             RequestedThemeVariant="Dark">
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://AvaloniaTerminal/Styles/Colors.axaml" />
+    <Style Selector="Window">
+      <Setter Property="FontFamily" Value="avares://Avalonia.Fonts.Inter/Assets#Inter" />
+      <Setter Property="Background" Value="#0B1018" />
+    </Style>
+    <Style Selector="Button">
+      <Setter Property="CornerRadius" Value="9" />
+      <Setter Property="Padding" Value="16,10" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#18A999" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.secondary">
+      <Setter Property="Background" Value="#202A39" />
+      <Setter Property="Foreground" Value="#E8EEF7" />
+    </Style>
+    <Style Selector="Button.danger">
+      <Setter Property="Background" Value="#8E3541" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Background" Value="#111925" />
+      <Setter Property="BorderBrush" Value="#2A374A" />
+      <Setter Property="Padding" Value="12,9" />
+    </Style>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="#121A26" />
+      <Setter Property="BorderBrush" Value="#233044" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="14" />
+      <Setter Property="Padding" Value="20" />
+    </Style>
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#91A0B5" />
+    </Style>
+    <Style Selector="TextBlock.title">
+      <Setter Property="FontSize" Value="18" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="#F5F8FC" />
+    </Style>
+  </Application.Styles>
+</Application>

@@ -1,0 +1,210 @@
+bash -s <<'IOBROKER_STUDIO_CHECKPOINT'
+#!/usr/bin/env bash
+set -u
+
+IOB_DIR=/opt/iobroker
+CHECKPOINT="$IOB_DIR/.studio-checkpoint"
+STAGING="$IOB_DIR/.studio-checkpoint-new"
+OLD_CHECKPOINT="$IOB_DIR/.studio-checkpoint-old"
+ROOT_MODE=none
+STOPPED=false
+IOB_USER=iobroker
+IOB_GROUP="$(id -gn iobroker 2>/dev/null || printf iobroker)"
+
+as_root() {
+    case "$ROOT_MODE" in
+        root) "$@" ;;
+        sudo) sudo "$@" ;;
+        doas) doas "$@" ;;
+        *) "$@" ;;
+    esac
+}
+
+as_iobroker() {
+    if [ "$(id -un)" = "$IOB_USER" ]; then "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        if command -v runuser >/dev/null 2>&1; then runuser -u "$IOB_USER" -- "$@"
+        else su -s /bin/sh "$IOB_USER" -c "$(printf '%q ' "$@")"; fi
+    elif [ "$ROOT_MODE" = sudo ]; then sudo -H -u "$IOB_USER" "$@"
+    elif [ "$ROOT_MODE" = doas ]; then doas -u "$IOB_USER" "$@"
+    else return 126
+    fi
+}
+
+start_iobroker() {
+    if iobroker start || iob start; then
+        STOPPED=false
+        return 0
+    fi
+    return 1
+}
+
+cleanup() {
+    if [ "$STOPPED" = true ]; then
+        echo "Starte ioBroker nach Abbruch erneut ..."
+        start_iobroker >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+select_access_mode() {
+    if [ "$(id -un)" = "$IOB_USER" ]; then
+        ROOT_MODE=none
+    elif [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root
+    elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo
+    elif command -v doas >/dev/null 2>&1 && doas true; then ROOT_MODE=doas
+    else
+        echo "FEHLER: Checkpoint muss als Benutzer iobroker erstellt werden; der Benutzerwechsel ist nicht moeglich."
+        echo "HINWEIS: ioBroker wurde nicht gestoppt und keine Datei veraendert."
+        return 1
+    fi
+    as_iobroker true || {
+        echo "FEHLER: Befehle koennen nicht als Benutzer iobroker ausgefuehrt werden."
+        return 1
+    }
+    echo "Alle Checkpoint-Dateien werden als Benutzer iobroker erzeugt."
+    return 0
+}
+
+verify_source_access() {
+    for source_path in "$IOB_DIR/iobroker-data" "$IOB_DIR/node_modules"; do
+        [ -e "$source_path" ] || continue
+        as_iobroker find "$source_path" -xdev -print >/dev/null 2>&1 || {
+            echo "FEHLER: Mindestens ein Eintrag unter $source_path ist nicht lesbar."
+            return 1
+        }
+    done
+}
+
+copy_tree() {
+    source_path=$1
+    target_path=$2
+    range_start=$3
+    range_end=$4
+    total_kb="$(as_iobroker du -sk "$source_path" 2>/dev/null | awk '{print $1}')"
+    [ -n "$total_kb" ] && [ "$total_kb" -gt 0 ] 2>/dev/null || total_kb=1
+
+    # Reflinks sind auf Btrfs/XFS nahezu sofort fertig. Auf anderen
+    # Dateisystemen kopiert cp normal, ohne unsichere Hardlinks zu erzeugen.
+    if cp --help 2>/dev/null | grep -q reflink; then
+        as_iobroker cp -a --reflink=auto "$source_path" "$target_path" &
+    else
+        as_iobroker cp -a "$source_path" "$target_path" &
+    fi
+    copy_pid=$!
+    while kill -0 "$copy_pid" 2>/dev/null; do
+        copied_kb="$(as_iobroker du -sk "$target_path" 2>/dev/null | awk '{print $1}')"
+        [ -n "$copied_kb" ] || copied_kb=0
+        percent=$((range_start + (copied_kb * (range_end - range_start) / total_kb)))
+        [ "$percent" -ge "$range_end" ] && percent=$((range_end - 1))
+        progress "$percent" "Kopiere $(basename "$source_path") …"
+        sleep 1
+    done
+    wait "$copy_pid"
+}
+
+[ -d "$IOB_DIR/iobroker-data" ] || {
+    echo "FEHLER: $IOB_DIR/iobroker-data wurde nicht gefunden."
+    exit 2
+}
+
+select_access_mode || exit 12
+verify_source_access || exit 13
+# Reste der frueheren Mehrfach-Sicherungslogik entfernen. Dauerhaft soll nur
+# der eine Checkpoint-Ordner existieren.
+as_iobroker rm -f "$IOB_DIR/.studio-checkpoint.tar.gz" "$IOB_DIR/.studio-checkpoint.tar.gz.new" 2>/dev/null || true
+as_iobroker rm -rf "$IOB_DIR/.studio-state-before-rollback" 2>/dev/null || true
+as_iobroker rm -rf "$IOB_DIR/.studio-restore-temp" 2>/dev/null || true
+PREFLIGHT="$IOB_DIR/.studio-checkpoint-preflight-$$"
+as_iobroker mkdir "$PREFLIGHT" 2>/dev/null &&
+    as_iobroker sh -c "printf test > '$PREFLIGHT/write-test'" 2>/dev/null &&
+    as_iobroker rm -rf "$PREFLIGHT" 2>/dev/null || {
+        as_root rm -rf "$PREFLIGHT" 2>/dev/null || true
+        echo "FEHLER: Reeller Schreibtest in $IOB_DIR fehlgeschlagen. ioBroker wurde nicht gestoppt."
+        exit 14
+    }
+
+progress 5 "Stoppe ioBroker …"
+echo "Stoppe ioBroker fuer einen konsistenten Schnell-Checkpoint ..."
+iobroker stop || iob stop || {
+    echo "FEHLER: ioBroker konnte nicht gestoppt werden."
+    exit 3
+}
+STOPPED=true
+
+as_iobroker rm -rf "$STAGING" ||
+    { echo "FEHLER: Alte temporaere Checkpoint-Daten konnten nicht entfernt werden."; exit 4; }
+as_iobroker mkdir -p "$STAGING"
+test -d "$STAGING" || { echo "FEHLER: Temporaerer Checkpoint-Ordner konnte nicht angelegt werden."; exit 4; }
+
+progress 10 "Kopiere iobroker-data …"
+echo "Sichere iobroker-data direkt auf dem Zielsystem ..."
+source_kb="$(as_iobroker du -sk "$IOB_DIR/iobroker-data" 2>/dev/null | awk '{print $1}')"
+if [ -d "$IOB_DIR/node_modules" ]; then
+    modules_kb="$(as_iobroker du -sk "$IOB_DIR/node_modules" 2>/dev/null | awk '{print $1}')"
+else
+    modules_kb=0
+fi
+free_kb="$(df -Pk "$IOB_DIR" | awk 'NR==2 {print $4}')"
+[ -n "$source_kb" ] || source_kb=0
+[ -n "$modules_kb" ] || modules_kb=0
+[ -n "$free_kb" ] || free_kb=0
+required_kb=$((source_kb + modules_kb + (source_kb + modules_kb) / 10 + 102400))
+if [ "$free_kb" -lt "$required_kb" ]; then
+    echo "FEHLER: Fuer den neuen Checkpoint ist nicht genug freier Speicher vorhanden."
+    echo "Benoetigt mit Reserve: $required_kb KiB; frei: $free_kb KiB."
+    exit 5
+fi
+copy_tree "$IOB_DIR/iobroker-data" "$STAGING/iobroker-data" 10 42 || { echo "FEHLER: iobroker-data konnte nicht vollstaendig kopiert werden."; exit 5; }
+
+if [ -d "$IOB_DIR/node_modules" ]; then
+    progress 42 "Kopiere node_modules …"
+    echo "Sichere node_modules (Reflink, falls vom Dateisystem unterstuetzt) ..."
+    copy_tree "$IOB_DIR/node_modules" "$STAGING/node_modules" 42 88 || { echo "FEHLER: node_modules konnte nicht vollstaendig kopiert werden."; exit 6; }
+else
+    echo "WARNUNG: node_modules fehlt."
+fi
+
+for root_file in package.json package-lock.json; do
+    if [ -f "$IOB_DIR/$root_file" ]; then
+        as_iobroker cp -a "$IOB_DIR/$root_file" "$STAGING/$root_file" || {
+            echo "FEHLER: $root_file konnte nicht kopiert werden."
+            exit 7
+        }
+    fi
+done
+
+progress 90 "Aktiviere den Checkpoint …"
+as_iobroker sh -c "printf '%s\n' '$(date -Is)' > '$STAGING/created-at'"
+as_iobroker rm -rf "$OLD_CHECKPOINT" ||
+    { echo "FEHLER: Alter temporaerer Checkpoint konnte nicht entfernt werden."; exit 8; }
+if [ -d "$CHECKPOINT" ]; then
+    as_iobroker mv "$CHECKPOINT" "$OLD_CHECKPOINT" ||
+        { echo "FEHLER: Der bisherige Checkpoint konnte nicht gesichert werden."; exit 8; }
+fi
+if ! as_iobroker mv "$STAGING" "$CHECKPOINT"; then
+    echo "FEHLER: Der neue Checkpoint konnte nicht aktiviert werden."
+    [ -d "$OLD_CHECKPOINT" ] && as_iobroker mv "$OLD_CHECKPOINT" "$CHECKPOINT"
+    exit 9
+fi
+as_iobroker rm -rf "$OLD_CHECKPOINT" || true
+
+progress 93 "Prüfe Checkpoint-Dateibesitzer …"
+wrong_owner="$(as_iobroker find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit 2>/dev/null || true)"
+[ -z "$wrong_owner" ] || { echo "FEHLER: Checkpoint-Datei gehoert nicht iobroker: $wrong_owner"; exit 10; }
+
+progress 96 "Starte ioBroker …"
+echo "Starte ioBroker ..."
+start_iobroker || {
+    echo "FEHLER: Checkpoint wurde erstellt, aber ioBroker konnte nicht gestartet werden."
+    exit 11
+}
+
+progress 100 "Checkpoint ist bereit"
+echo "Schnell-Checkpoint ist als einfache Kopie bereit."
+as_root du -sh "$CHECKPOINT" 2>/dev/null || true
+IOBROKER_STUDIO_CHECKPOINT

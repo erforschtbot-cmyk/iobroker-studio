@@ -1,0 +1,121 @@
+bash -s <<'IOBROKER_TOOL_DIRECT_RESTORE'
+#!/usr/bin/env bash
+set -u
+
+IOB_DIR=/opt/iobroker
+ARCHIVE=/tmp/iobroker-tool-restore.tar.gz
+RESTORE_TEMP="$IOB_DIR/.studio-restore-temp"
+ROOT_MODE=none
+STOPPED=false
+CURRENT_MOVED=false
+EXTRACTION_STARTED=false
+IOB_USER=iobroker
+
+as_root() {
+    case "$ROOT_MODE" in root) "$@" ;; sudo) sudo "$@" ;; doas) doas "$@" ;; *) "$@" ;; esac
+}
+
+as_iobroker() {
+    if [ "$(id -un)" = "$IOB_USER" ]; then "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        if command -v runuser >/dev/null 2>&1; then runuser -u "$IOB_USER" -- "$@"
+        else su -s /bin/sh "$IOB_USER" -c "$(printf '%q ' "$@")"; fi
+    elif [ "$ROOT_MODE" = sudo ]; then sudo -H -u "$IOB_USER" "$@"
+    elif [ "$ROOT_MODE" = doas ]; then doas -u "$IOB_USER" "$@"
+    else return 126
+    fi
+}
+
+progress() { printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"; }
+
+start_iobroker() {
+    if iobroker start || iob start; then STOPPED=false; return 0; fi
+    return 1
+}
+
+undo_restore() {
+    echo "Entpacken oder Start fehlgeschlagen; stelle den bisherigen Zustand wieder her ..."
+    if [ "$CURRENT_MOVED" = true ]; then
+        [ "$EXTRACTION_STARTED" = true ] && as_iobroker rm -rf "$IOB_DIR/iobroker-data" "$IOB_DIR/node_modules"
+        for root_file in package.json package-lock.json; do as_iobroker rm -f "$IOB_DIR/$root_file"; done
+        [ -d "$RESTORE_TEMP/iobroker-data" ] && as_iobroker mv "$RESTORE_TEMP/iobroker-data" "$IOB_DIR/iobroker-data"
+        [ -d "$RESTORE_TEMP/node_modules" ] && as_iobroker mv "$RESTORE_TEMP/node_modules" "$IOB_DIR/node_modules"
+        for root_file in package.json package-lock.json; do
+            [ -f "$RESTORE_TEMP/$root_file" ] && as_iobroker mv "$RESTORE_TEMP/$root_file" "$IOB_DIR/$root_file"
+        done
+        CURRENT_MOVED=false
+    fi
+    start_iobroker >/dev/null 2>&1 || true
+}
+
+cleanup() {
+    [ "$STOPPED" = true ] && undo_restore
+}
+trap cleanup EXIT INT TERM HUP
+
+[ -d "$IOB_DIR" ] || { echo "FEHLER: $IOB_DIR wurde nicht gefunden."; exit 2; }
+[ -s "$ARCHIVE" ] || { echo "FEHLER: Die hochgeladene Datei fehlt oder ist leer."; exit 3; }
+id "$IOB_USER" >/dev/null 2>&1 || { echo "FEHLER: Benutzer iobroker fehlt."; exit 2; }
+
+if [ "$(id -un)" = "$IOB_USER" ]; then ROOT_MODE=none
+elif [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root
+elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo
+elif command -v doas >/dev/null 2>&1 && doas true; then ROOT_MODE=doas
+else
+    echo "FEHLER: Restore kann nicht als Benutzer iobroker ausgefuehrt werden. Nichts wurde veraendert."
+    exit 10
+fi
+
+progress 10 "Upload fertig – stoppe ioBroker …"
+echo "Upload fertig. Stoppe ioBroker ..."
+iobroker stop || iob stop || { echo "FEHLER: ioBroker konnte nicht gestoppt werden."; exit 4; }
+STOPPED=true
+
+as_iobroker rm -rf "$RESTORE_TEMP" || exit 5
+as_iobroker mkdir -p "$RESTORE_TEMP" || exit 5
+[ -d "$IOB_DIR/iobroker-data" ] && as_iobroker mv "$IOB_DIR/iobroker-data" "$RESTORE_TEMP/iobroker-data"
+[ -d "$IOB_DIR/node_modules" ] && as_iobroker mv "$IOB_DIR/node_modules" "$RESTORE_TEMP/node_modules"
+for root_file in package.json package-lock.json; do
+    [ -f "$IOB_DIR/$root_file" ] && as_iobroker mv "$IOB_DIR/$root_file" "$RESTORE_TEMP/$root_file"
+done
+CURRENT_MOVED=true
+
+progress 20 "Entpacke Backup direkt nach /opt/iobroker …"
+echo "Entpacke Backup direkt nach /opt/iobroker ..."
+EXTRACTION_STARTED=true
+extract_started="$(date +%s)"
+as_iobroker tar -xzf "$ARCHIVE" -C "$IOB_DIR" &
+extract_pid=$!
+while kill -0 "$extract_pid" 2>/dev/null; do
+    extracted_kib="$(as_iobroker du -sk "$IOB_DIR/iobroker-data" "$IOB_DIR/node_modules" 2>/dev/null | awk '{sum += $1} END {print sum}')"
+    [ -n "$extracted_kib" ] || extracted_kib=0
+    progress 60 "Entpacke direkt: $((extracted_kib / 1024)) MiB, $(( $(date +%s) - extract_started ))s …"
+    sleep 1
+done
+if ! wait "$extract_pid"; then
+    undo_restore
+    echo "FEHLER: tar konnte die hochgeladene Datei nicht entpacken."
+    exit 6
+fi
+
+as_iobroker rm -f "$IOB_DIR/created-at" 2>/dev/null || true
+if [ ! -d "$IOB_DIR/iobroker-data" ]; then
+    undo_restore
+    echo "FEHLER: Nach dem Entpacken fehlt iobroker-data."
+    exit 7
+fi
+
+progress 90 "Entpacken fertig – starte ioBroker …"
+echo "Entpacken fertig. Starte ioBroker ..."
+if ! start_iobroker; then
+    undo_restore
+    echo "FEHLER: ioBroker konnte nach dem Entpacken nicht gestartet werden."
+    exit 8
+fi
+
+progress 97 "ioBroker läuft – entferne temporäre Arbeitsdateien …"
+as_iobroker rm -rf "$RESTORE_TEMP" 2>/dev/null || true
+rm -f "$ARCHIVE" 2>/dev/null || as_root rm -f "$ARCHIVE" 2>/dev/null || true
+progress 100 "Fertig – Backup direkt entpackt und ioBroker gestartet"
+echo "Wiederherstellung erfolgreich abgeschlossen."
+IOBROKER_TOOL_DIRECT_RESTORE

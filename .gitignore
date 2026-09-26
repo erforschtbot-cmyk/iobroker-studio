@@ -1,0 +1,14 @@
+# Build-Erzeugnisse
+/publish/
+/bin/
+/obj/
+*.user
+*.suo
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Lokale Zugangsdaten / Einstellungen
+*.secrets
+appsettings.*.json

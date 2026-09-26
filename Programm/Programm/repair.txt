@@ -1,0 +1,599 @@
+bash -s <<'IOBROKER_TOOL_REPAIR'
+#!/usr/bin/env bash
+#
+# ioBroker Tool - distributionsuebergreifende Best-Effort-Reparatur
+# Veraendert keine ioBroker-Daten und erstellt absichtlich kein Backup.
+#
+
+set -u
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
+VERSIONS_URL="https://raw.githubusercontent.com/ioBroker/ioBroker/master/versions.json"
+INSTALLER_URL="https://iobroker.net/install.sh"
+TARGET_NODE_MAJOR=
+ACCEPTED_NODE_MAJORS=
+FAILURES=0
+FAILED_DESCRIPTIONS=()
+SKIPPED=0
+STEPS=0
+LOG_FILE="/tmp/iobroker-tool-repair-$(date +%Y%m%d-%H%M%S).log"
+STOPPED=false
+STUDIO_REPAIR_BASE="${STUDIO_REPAIR_BASE:-1}"
+STUDIO_REPAIR_NODE="${STUDIO_REPAIR_NODE:-1}"
+STUDIO_REPAIR_CONTROLLER="${STUDIO_REPAIR_CONTROLLER:-1}"
+STUDIO_REPAIR_NATIVE="${STUDIO_REPAIR_NATIVE:-1}"
+STUDIO_REPAIR_ADAPTERS="${STUDIO_REPAIR_ADAPTERS:-1}"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+headline() {
+    printf '\n\033[1;36m==> %s\033[0m\n' "$*"
+}
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+ok() {
+    printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"
+}
+
+warn() {
+    printf '\033[1;33m[WARN]\033[0m %s\n' "$*"
+}
+
+fail() {
+    printf '\033[1;31m[FEHLER]\033[0m %s\n' "$*"
+    FAILURES=$((FAILURES + 1))
+    FAILED_DESCRIPTIONS+=("$*")
+}
+
+record_issue() {
+    warn "$*"
+    FAILURES=$((FAILURES + 1))
+    FAILED_DESCRIPTIONS+=("$*")
+}
+
+print_failure_summary() {
+    local index
+    [ "${#FAILED_DESCRIPTIONS[@]}" -gt 0 ] || return 0
+    printf '\nZusammenfassung der Hinweise/Fehler:\n'
+    for index in "${!FAILED_DESCRIPTIONS[@]}"; do
+        printf 'Fehler %d: %s\n' "$((index + 1))" "${FAILED_DESCRIPTIONS[$index]}"
+        printf 'STUDIO_ISSUE|%d|%s\n' "$((index + 1))" "${FAILED_DESCRIPTIONS[$index]}"
+    done
+}
+
+run_step() {
+    local description="$1"
+    shift
+    STEPS=$((STEPS + 1))
+    headline "$description"
+    if "$@"; then
+        ok "$description"
+        return 0
+    fi
+    fail "$description"
+    return 1
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+selected() {
+    [ "$1" = "1" ]
+}
+
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif [ "${ROOT_MODE:-none}" = "sudo" ]; then
+        sudo "$@"
+    elif [ "${ROOT_MODE:-none}" = "doas" ]; then
+        doas "$@"
+    else
+        return 126
+    fi
+}
+
+as_iobroker_user() {
+    if [ "$(id -un)" = "$IOB_USER" ]; then
+        "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        if have runuser; then
+            runuser -u "$IOB_USER" -- "$@"
+        else
+            su -s /bin/sh "$IOB_USER" -c "$(printf '%q ' "$@")"
+        fi
+    elif [ "${ROOT_MODE:-none}" = "sudo" ]; then
+        sudo -H -u "$IOB_USER" "$@"
+    elif [ "${ROOT_MODE:-none}" = "doas" ]; then
+        doas -u "$IOB_USER" "$@"
+    else
+        return 126
+    fi
+}
+
+download() {
+    local url="$1"
+    local destination="$2"
+    if have curl; then
+        curl -fL --connect-timeout 15 --retry 2 --retry-delay 2 \
+            "$url" -o "$destination"
+    elif have wget; then
+        wget -O "$destination" "$url"
+    else
+        return 127
+    fi
+}
+
+detect_node_policy() {
+    local versions_file
+    local installer_file
+    local accepted_line
+    versions_file="$(mktemp /tmp/iobroker-versions.XXXXXX.json)" || return 1
+
+    if download "$VERSIONS_URL" "$versions_file"; then
+        TARGET_NODE_MAJOR="$(
+            sed -n 's/.*"nodeJsRecommended"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+                "$versions_file" | head -n 1
+        )"
+        accepted_line="$(
+            sed -n 's/.*"nodeJsAccepted"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' \
+                "$versions_file" | head -n 1
+        )"
+        ACCEPTED_NODE_MAJORS="$(printf '%s' "$accepted_line" | tr -cd '0-9, ' | tr ',' ' ')"
+    fi
+    rm -f "$versions_file"
+
+    # Zweite offizielle Quelle: denselben Fallback aus dem jeweils aktuellen
+    # ioBroker-Installer lesen. Auch hier steht absichtlich keine Zahl im Tool.
+    if [ -z "$TARGET_NODE_MAJOR" ]; then
+        installer_file="$(mktemp /tmp/iobroker-installer.XXXXXX.sh)" || return 1
+        if download "$INSTALLER_URL" "$installer_file"; then
+            TARGET_NODE_MAJOR="$(
+                sed -n 's/^[[:space:]]*NODE_MAJOR=\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+                    "$installer_file" | head -n 1
+            )"
+        fi
+        rm -f "$installer_file"
+    fi
+
+    if [ -n "$TARGET_NODE_MAJOR" ]; then
+        ok "Offizielle ioBroker-Empfehlung: Node.js $TARGET_NODE_MAJOR"
+        printf 'Von ioBroker akzeptierte Hauptversionen: %s\n' \
+            "${ACCEPTED_NODE_MAJORS:-nicht angegeben}"
+        return 0
+    fi
+
+    warn "Die aktuelle Node-Empfehlung konnte nicht von ioBroker geladen werden."
+    warn "Es wird keine im Tool fest verdrahtete Node-Version erzwungen."
+    return 1
+}
+
+run_iob() {
+    if have iob; then
+        iob "$@"
+    elif have iobroker; then
+        iobroker "$@"
+    elif [ -x "$IOB_DIR/iobroker" ]; then
+        "$IOB_DIR/iobroker" "$@"
+    else
+        return 127
+    fi
+}
+
+detect_root_access() {
+    ROOT_MODE=none
+    if [ "$(id -u)" -eq 0 ]; then
+        ROOT_MODE=root
+        ok "Sitzung laeuft bereits als root."
+        return
+    fi
+
+    if have sudo; then
+        if sudo -n true 2>/dev/null; then
+            ROOT_MODE=sudo
+            ok "sudo ist ohne Rueckfrage verfuegbar."
+            return
+        fi
+        warn "sudo benoetigt eventuell das Linux-Passwort."
+        if sudo -v; then
+            ROOT_MODE=sudo
+            ok "sudo wurde freigeschaltet."
+            return
+        fi
+    fi
+
+    if have doas && doas true; then
+        ROOT_MODE=doas
+        ok "doas wurde freigeschaltet."
+        return
+    fi
+
+    warn "Keine Administratorrechte. Systemweite Schritte werden uebersprungen;"
+    warn "die Reparatur innerhalb der ioBroker-Installation laeuft trotzdem weiter."
+}
+
+detect_iobroker() {
+    IOB_DIR=
+    if [ -d /opt/iobroker ]; then
+        IOB_DIR=/opt/iobroker
+    elif have iobroker; then
+        local executable
+        executable="$(readlink -f "$(command -v iobroker)" 2>/dev/null || command -v iobroker)"
+        case "$executable" in
+            */node_modules/iobroker.js-controller/*)
+                IOB_DIR="${executable%%/node_modules/iobroker.js-controller/*}"
+                ;;
+        esac
+    fi
+
+    if [ -z "$IOB_DIR" ] || [ ! -d "$IOB_DIR" ]; then
+        fail "Keine bestehende ioBroker-Installation gefunden."
+        printf 'Geprueft wurden /opt/iobroker und der Pfad des iobroker-Befehls.\n'
+        exit 2
+    fi
+
+    IOB_USER="$(stat -c '%U' "$IOB_DIR" 2>/dev/null || printf 'iobroker')"
+    if [ "$IOB_USER" = "root" ] && id iobroker >/dev/null 2>&1; then
+        IOB_USER=iobroker
+    fi
+    ok "Installation: $IOB_DIR (Besitzer: $IOB_USER)"
+}
+
+show_diagnostics() {
+    printf 'Zeit:         %s\n' "$(date --iso-8601=seconds 2>/dev/null || date)"
+    printf 'System:       %s\n' "$(uname -a)"
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        printf 'Distribution: %s\n' "${PRETTY_NAME:-${ID:-unbekannt}}"
+    fi
+    printf 'Benutzer:     %s (UID %s)\n' "$(id -un)" "$(id -u)"
+    printf 'Node.js:      %s\n' "$(node --version 2>/dev/null || printf 'nicht gefunden')"
+    printf 'npm:          %s\n' "$(npm --version 2>/dev/null || printf 'nicht gefunden')"
+    printf 'ioBroker:     %s\n' "$(run_iob version 2>/dev/null || printf 'nicht abrufbar')"
+    printf 'Freier Platz: %s\n' "$(df -hP "$IOB_DIR" 2>/dev/null | awk 'NR==2 {print $4 " auf " $6}')"
+}
+
+stop_iobroker() {
+    if run_iob stop; then
+        STOPPED=true
+        return 0
+    fi
+    if have systemctl && [ "$ROOT_MODE" != "none" ]; then
+        if as_root systemctl stop iobroker; then
+            STOPPED=true
+            return 0
+        fi
+    fi
+    warn "ioBroker konnte nicht kontrolliert gestoppt werden."
+    return 1
+}
+
+package_manager_node_fallback() {
+    [ "$ROOT_MODE" != "none" ] || {
+        warn "Node.js-Fallback braucht Administratorrechte."
+        return 126
+    }
+    [ -n "$TARGET_NODE_MAJOR" ] || {
+        warn "Ohne offizielle Zielversion wird Node.js nicht blind ersetzt."
+        return 1
+    }
+
+    if have apt-get; then
+        local setup_script
+        setup_script="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)" || return 1
+        download "https://deb.nodesource.com/setup_${TARGET_NODE_MAJOR}.x" "$setup_script" ||
+            { rm -f "$setup_script"; return 1; }
+        as_root apt-mark unhold nodejs 2>/dev/null || true
+        as_root bash "$setup_script" || { rm -f "$setup_script"; return 1; }
+        rm -f "$setup_script"
+
+        if ! as_root apt-get install -y --allow-downgrades nodejs; then
+            warn "Normales Node.js-Upgrade ist fehlgeschlagen."
+            warn "Entferne nur kollidierende Node/npm-Systempakete und versuche es erneut."
+            as_root apt-get remove -y nodejs npm libnode-dev nodejs-doc || true
+            as_root apt-get install -y --allow-downgrades nodejs
+        fi
+    elif have dnf; then
+        local setup_script
+        setup_script="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)" || return 1
+        download "https://rpm.nodesource.com/setup_${TARGET_NODE_MAJOR}.x" "$setup_script" ||
+            { rm -f "$setup_script"; return 1; }
+        as_root bash "$setup_script" || { rm -f "$setup_script"; return 1; }
+        rm -f "$setup_script"
+        as_root dnf module disable -y nodejs 2>/dev/null || true
+        as_root dnf install -y nodejs || {
+            as_root dnf remove -y nodejs npm || true
+            as_root dnf install -y nodejs
+        }
+    elif have yum; then
+        local setup_script
+        setup_script="$(mktemp /tmp/nodesource-setup.XXXXXX.sh)" || return 1
+        download "https://rpm.nodesource.com/setup_${TARGET_NODE_MAJOR}.x" "$setup_script" ||
+            { rm -f "$setup_script"; return 1; }
+        as_root bash "$setup_script" || { rm -f "$setup_script"; return 1; }
+        rm -f "$setup_script"
+        as_root yum install -y nodejs || {
+            as_root yum remove -y nodejs npm || true
+            as_root yum install -y nodejs
+        }
+    elif have zypper; then
+        if as_root zypper --non-interactive install \
+            "nodejs$TARGET_NODE_MAJOR" "npm$TARGET_NODE_MAJOR" curl ca-certificates; then
+            return 0
+        fi
+        as_root zypper --non-interactive install nodejs npm curl ca-certificates
+    elif have pacman; then
+        as_root pacman -Sy --needed --noconfirm nodejs npm curl ca-certificates
+    elif have apk; then
+        as_root apk add nodejs npm curl ca-certificates
+    else
+        warn "Kein unterstuetzter Paketmanager gefunden."
+        return 127
+    fi
+}
+
+repair_node() {
+    local current_major=0
+    local accepted=false
+    local installed_major=0
+
+    detect_node_policy || true
+    if have node; then
+        current_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
+    fi
+
+    if [ -n "$TARGET_NODE_MAJOR" ]; then
+        printf 'Gefundene Node.js-Hauptversion: %s; ioBroker-Empfehlung: %s\n' \
+            "$current_major" "$TARGET_NODE_MAJOR"
+    else
+        printf 'Gefundene Node.js-Hauptversion: %s\n' "$current_major"
+        if [ "$current_major" -gt 0 ]; then
+            warn "Ohne abrufbare offizielle Empfehlung bleibt die installierte Version unveraendert."
+            return 0
+        fi
+        return 1
+    fi
+
+    for version in $ACCEPTED_NODE_MAJORS; do
+        [ "$current_major" = "$version" ] && accepted=true
+    done
+
+    if [ "$accepted" = true ] && [ "$current_major" = "$TARGET_NODE_MAJOR" ]; then
+        ok "Node.js entspricht bereits der aktuellen ioBroker-Empfehlung."
+        return 0
+    fi
+
+    if have iob; then
+        # Der ioBroker-eigene Updater kennt Plattform, Architektur und Empfehlung
+        # besser als dieses Tool. Ohne Versionsparameter nimmt er die Empfehlung.
+        if iob nodejs-update "$TARGET_NODE_MAJOR"; then
+            hash -r
+            installed_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
+            if [ "$installed_major" = "$TARGET_NODE_MAJOR" ]; then
+                ok "Node.js $TARGET_NODE_MAJOR wurde mit dem offiziellen ioBroker-Updater aktiviert."
+                stop_iobroker || true
+                return 0
+            fi
+            warn "Der ioBroker-Updater lief durch, aktiv ist aber weiterhin Node.js $installed_major."
+        fi
+        warn "'iob nodejs-update' ist fehlgeschlagen; Paketmanager-Fallback folgt."
+    else
+        warn "Der Befehl 'iob' ist nicht verfuegbar; Paketmanager-Fallback folgt."
+    fi
+
+    [ "$accepted" = true ] &&
+        warn "Node.js $current_major ist zwar akzeptiert, entspricht aber nicht der Empfehlung."
+
+    package_manager_node_fallback || return $?
+    hash -r
+    installed_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
+    if [ "$installed_major" != "$TARGET_NODE_MAJOR" ]; then
+        warn "Nach der Installation ist Node.js $installed_major statt $TARGET_NODE_MAJOR aktiv."
+        warn "Moeglicherweise liegt eine zweite Node.js-Installation frueher im PATH."
+        return 1
+    fi
+    ok "Empfohlene Node.js-Hauptversion $TARGET_NODE_MAJOR ist aktiv."
+}
+
+official_fix() {
+    local fix_script
+    local fix_output
+    local result
+    fix_script="$(mktemp /tmp/iobroker-fix.XXXXXX.sh)" || return 1
+    fix_output="$(mktemp /tmp/iobroker-fix-output.XXXXXX.log)" || {
+        rm -f "$fix_script"
+        return 1
+    }
+    if ! download "https://iobroker.net/fix.sh" "$fix_script"; then
+        rm -f "$fix_script" "$fix_output"
+        return 1
+    fi
+    chmod 700 "$fix_script"
+
+    # Der offizielle Fixer soll wie von ioBroker vorgesehen als angemeldeter
+    # Benutzer laufen und bei Bedarf selbst sudo verwenden.
+    bash "$fix_script" 2>&1 | tee "$fix_output"
+    result=${PIPESTATUS[0]}
+
+    rm -f "$fix_script" "$fix_output"
+    return "$result"
+}
+
+upgrade_controller() {
+    cd "$IOB_DIR" || return 1
+    if run_iob upgrade self; then
+        return 0
+    fi
+
+    warn "ioBroker-Selbstupgrade ging nicht; npm-Fallback fuer den JS-Controller."
+    have npm || return 127
+    as_iobroker_user npm install --omit=dev --no-audit --no-fund iobroker.js-controller@latest
+}
+
+rebuild_native_modules() {
+    cd "$IOB_DIR" || return 1
+    have npm || return 127
+    local module_count
+    local rebuild_pid
+    local rebuild_started
+    local elapsed
+    module_count="$(
+        find "$IOB_DIR/node_modules" -mindepth 1 -maxdepth 1 \
+            ! -name '.bin' -print 2>/dev/null | wc -l
+    )"
+    printf 'Arbeitsverzeichnis: %s\n' "$IOB_DIR"
+    printf 'Ausfuehrender Benutzer: %s\n' "$IOB_USER"
+    printf 'Gefundene Top-Level-Module: %s\n' "$module_count"
+
+    progress 69 "Prüfe npm-Cache als $IOB_USER …"
+    as_iobroker_user npm cache verify || true
+    progress 72 "Baue native Module als $IOB_USER neu …"
+    rebuild_started="$(date +%s)"
+    as_iobroker_user npm rebuild --foreground-scripts &
+    rebuild_pid=$!
+    while kill -0 "$rebuild_pid" 2>/dev/null; do
+        elapsed=$(($(date +%s) - rebuild_started))
+        progress 72 "npm rebuild in $IOB_DIR – ${elapsed}s …"
+        sleep 2
+    done
+    wait "$rebuild_pid"
+}
+
+upgrade_adapters() {
+    run_iob update || true
+    run_iob upgrade -y
+}
+
+start_iobroker() {
+    if run_iob start; then
+        STOPPED=false
+        return 0
+    fi
+    if have systemctl && [ "$ROOT_MODE" != "none" ]; then
+        if as_root systemctl start iobroker; then
+            STOPPED=false
+            return 0
+        fi
+        return 1
+    else
+        return 1
+    fi
+}
+
+cleanup() {
+    if [ "$STOPPED" = true ]; then
+        printf '\nAbbruch erkannt: ioBroker wird sicherheitshalber erneut gestartet ...\n'
+        start_iobroker || warn "ioBroker konnte beim Aufraeumen nicht erneut gestartet werden."
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+is_iobroker_running() {
+    if have systemctl && systemctl is-active --quiet iobroker 2>/dev/null; then
+        return 0
+    fi
+    local status_output
+    status_output="$(run_iob status 2>&1 || true)"
+    printf '%s\n' "$status_output"
+    printf '%s\n' "$status_output" | grep -qiE 'is running|läuft|running on this host'
+}
+
+headline "ioBroker Tool - universelle Reparatur"
+printf 'Best-Effort-Reparatur ohne Backup und ohne Loeschen von ioBroker-Daten.\n'
+printf 'Protokoll: %s\n' "$LOG_FILE"
+printf 'Auswahl: Basis=%s | Node.js=%s | JS-Controller=%s | Native Module=%s | Adapter=%s\n' \
+    "$STUDIO_REPAIR_BASE" "$STUDIO_REPAIR_NODE" "$STUDIO_REPAIR_CONTROLLER" \
+    "$STUDIO_REPAIR_NATIVE" "$STUDIO_REPAIR_ADAPTERS"
+
+progress 2 "Prüfe Administratorrechte …"
+detect_root_access
+progress 5 "Suche ioBroker-Installation …"
+detect_iobroker
+
+# Systemweite Reparaturen duerfen nicht erst nach dem Stoppen feststellen,
+# dass sudo/root fehlt. Der offizielle Fixer und Node-Updater verwenden selbst
+# sudo; deshalb wird deren benoetigte Rechteerhoehung hier verbindlich getestet.
+if { selected "$STUDIO_REPAIR_BASE" || selected "$STUDIO_REPAIR_NODE"; } &&
+   [ "$ROOT_MODE" = none ]; then
+    echo "FEHLER: Die gewaehlte Basis-/Node-Reparatur benoetigt funktionierendes root, sudo oder doas."
+    echo "FEHLER: sudo/doas fehlt, ist nicht erlaubt oder das Passwort wurde abgelehnt."
+    echo "HINWEIS: ioBroker wurde nicht gestoppt und keine Reparatur begonnen."
+    exit 30
+fi
+progress 8 "Erstelle Systemdiagnose …"
+run_step "Systemdiagnose" show_diagnostics || true
+progress 12 "Stoppe ioBroker …"
+run_step "ioBroker stoppen" stop_iobroker || true
+if selected "$STUDIO_REPAIR_NODE"; then
+    progress 18 "Prüfe und aktualisiere Node.js …"
+    run_step "Node.js pruefen/aktualisieren" repair_node || true
+else
+    progress 28 "Node.js-Aktualisierung abgewählt"
+    warn "Node.js-Aktualisierung wurde abgewählt."
+fi
+if selected "$STUDIO_REPAIR_BASE"; then
+    progress 34 "Führe offiziellen ioBroker-Fixer aus …"
+    run_step "Offizielles ioBroker-Fix-Skript" official_fix || true
+else
+    progress 46 "Basisreparatur abgewählt"
+    warn "Offizieller Fixer wurde abgewählt."
+fi
+if selected "$STUDIO_REPAIR_CONTROLLER"; then
+    progress 52 "Repariere den JS-Controller …"
+    run_step "JS-Controller aktualisieren/reparieren" upgrade_controller || true
+else
+    progress 62 "JS-Controller-Aktualisierung abgewählt"
+    warn "JS-Controller-Aktualisierung wurde abgewählt."
+fi
+if selected "$STUDIO_REPAIR_NATIVE"; then
+    progress 68 "Baue native npm-Module neu …"
+    run_step "Native npm-Module neu bauen" rebuild_native_modules || true
+else
+    progress 76 "Native Module abgewählt"
+    warn "Neuaufbau nativer Module wurde abgewählt."
+fi
+if selected "$STUDIO_REPAIR_ADAPTERS"; then
+    progress 80 "Aktualisiere Adapter …"
+    run_step "Adapter-Repository und Adapter aktualisieren" upgrade_adapters || true
+else
+    progress 87 "Adapter-Aktualisierung abgewählt"
+    warn "Adapter-Aktualisierung wurde abgewählt."
+fi
+progress 90 "Offizielle ioBroker-Reparaturstufen abgeschlossen"
+progress 96 "Starte ioBroker …"
+run_step "ioBroker starten" start_iobroker || true
+
+progress 98 "Führe Endkontrolle aus …"
+headline "Endkontrolle"
+show_diagnostics
+run_iob status || true
+IOBROKER_RUNNING=false
+if is_iobroker_running; then
+    IOBROKER_RUNNING=true
+fi
+
+printf '\nAusgefuehrte Stufen: %s | Fehlgeschlagen: %s\n' "$STEPS" "$FAILURES"
+printf 'Vollstaendiges Protokoll: %s\n' "$LOG_FILE"
+if [ "$IOBROKER_RUNNING" != true ]; then
+    fail "ioBroker laeuft nach dem Reparaturversuch nicht."
+    print_failure_summary
+    progress 100 "ioBroker konnte nicht gestartet werden"
+    exit 20
+elif [ "$FAILURES" -eq 0 ]; then
+    ok "Reparaturlauf ohne erkannten Fehler abgeschlossen."
+    progress 100 "Reparaturlauf erfolgreich abgeschlossen"
+    exit 0
+else
+    warn "ioBroker laeuft. Einzelne Reparaturstufen meldeten jedoch Hinweise."
+    print_failure_summary
+    progress 100 "ioBroker läuft – Reparatur mit Hinweisen abgeschlossen"
+    exit 10
+fi
+IOBROKER_TOOL_REPAIR

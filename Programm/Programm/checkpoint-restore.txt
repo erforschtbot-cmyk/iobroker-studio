@@ -1,0 +1,189 @@
+bash -s <<'IOBROKER_STUDIO_ROLLBACK'
+#!/usr/bin/env bash
+set -u
+
+IOB_DIR=/opt/iobroker
+CHECKPOINT="$IOB_DIR/.studio-checkpoint"
+RESTORE_TEMP="$IOB_DIR/.studio-restore-temp"
+ROOT_MODE=none
+STOPPED=false
+SWAPPED=false
+CURRENT_MOVED=false
+IOB_USER=iobroker
+
+as_root() {
+    case "$ROOT_MODE" in
+        root) "$@" ;;
+        sudo) sudo "$@" ;;
+        doas) doas "$@" ;;
+        *) "$@" ;;
+    esac
+}
+
+as_iobroker() {
+    if [ "$(id -un)" = "$IOB_USER" ]; then "$@"
+    elif [ "$(id -u)" -eq 0 ]; then
+        if command -v runuser >/dev/null 2>&1; then runuser -u "$IOB_USER" -- "$@"
+        else su -s /bin/sh "$IOB_USER" -c "$(printf '%q ' "$@")"; fi
+    elif [ "$ROOT_MODE" = sudo ]; then sudo -H -u "$IOB_USER" "$@"
+    elif [ "$ROOT_MODE" = doas ]; then doas -u "$IOB_USER" "$@"
+    else return 126
+    fi
+}
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+copy_tree() {
+    source_path=$1
+    target_path=$2
+    range_start=$3
+    range_end=$4
+    label=$5
+    total_kib="$(as_iobroker du -sk "$source_path" 2>/dev/null | awk '{print $1}')"
+    [ -n "$total_kib" ] && [ "$total_kib" -gt 0 ] 2>/dev/null || total_kib=1
+    total_mib=$(( (total_kib + 1023) / 1024 ))
+    started_at="$(date +%s)"
+
+    as_iobroker cp -a "$source_path" "$target_path" &
+    copy_pid=$!
+    while kill -0 "$copy_pid" 2>/dev/null; do
+        copied_kib="$(as_iobroker du -sk "$target_path" 2>/dev/null | awk '{print $1}')"
+        [ -n "$copied_kib" ] || copied_kib=0
+        percent=$((range_start + copied_kib * (range_end - range_start) / total_kib))
+        [ "$percent" -ge "$range_end" ] && percent=$((range_end - 1))
+        copied_mib=$((copied_kib / 1024))
+        elapsed=$(( $(date +%s) - started_at ))
+        progress "$percent" "Kopiere $label: ${copied_mib}/${total_mib} MiB, ${elapsed}s …"
+        sleep 1
+    done
+    wait "$copy_pid" || return 1
+    progress "$range_end" "$label vollständig kopiert (${total_mib} MiB)"
+}
+
+start_iobroker() {
+    if iobroker start || iob start; then
+        STOPPED=false
+        return 0
+    fi
+    return 1
+}
+
+undo_swap() {
+    echo "Rollback-Start fehlgeschlagen - stelle den Zustand von unmittelbar davor wieder her ..."
+    as_iobroker rm -rf "$IOB_DIR/iobroker-data" "$IOB_DIR/node_modules"
+    [ -d "$RESTORE_TEMP/iobroker-data" ] && as_iobroker mv "$RESTORE_TEMP/iobroker-data" "$IOB_DIR/iobroker-data"
+    [ -d "$RESTORE_TEMP/node_modules" ] && as_iobroker mv "$RESTORE_TEMP/node_modules" "$IOB_DIR/node_modules"
+    for root_file in package.json package-lock.json; do
+        [ -f "$RESTORE_TEMP/$root_file" ] && as_iobroker mv "$RESTORE_TEMP/$root_file" "$IOB_DIR/$root_file"
+    done
+    CURRENT_MOVED=false
+    start_iobroker >/dev/null 2>&1 || true
+}
+
+cleanup() {
+    if [ "$STOPPED" = true ]; then
+        if [ "$CURRENT_MOVED" = true ] && [ "$SWAPPED" = false ]; then
+            undo_swap
+        else
+            start_iobroker >/dev/null 2>&1 || true
+        fi
+    fi
+}
+trap cleanup EXIT INT TERM
+
+[ -d "$CHECKPOINT/iobroker-data" ] || {
+    echo "FEHLER: Es ist kein gueltiger Schnell-Checkpoint vorhanden."
+    exit 2
+}
+
+PREFLIGHT="$IOB_DIR/.studio-rollback-preflight-$$"
+if [ "$(id -un)" = "$IOB_USER" ]; then
+    ROOT_MODE=none
+elif [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root
+elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo
+elif command -v doas >/dev/null 2>&1 && doas true; then ROOT_MODE=doas
+else
+    echo "FEHLER: Keine Schreibrechte fuer $IOB_DIR und sudo/doas funktioniert nicht."
+    echo "HINWEIS: ioBroker wurde nicht gestoppt und nichts wurde veraendert."
+    exit 8
+fi
+as_iobroker mkdir "$PREFLIGHT" 2>/dev/null && as_iobroker rm -rf "$PREFLIGHT" 2>/dev/null || {
+    as_root rm -rf "$PREFLIGHT" 2>/dev/null || true
+    echo "FEHLER: Schreibtest als Benutzer iobroker fuer den Rollback fehlgeschlagen. ioBroker wurde nicht gestoppt."
+    exit 9
+}
+wrong_checkpoint_owner="$(as_iobroker find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit 2>/dev/null || true)"
+[ -z "$wrong_checkpoint_owner" ] || {
+    echo "FEHLER: Der Checkpoint enthaelt eine Datei, die nicht iobroker gehoert: $wrong_checkpoint_owner"
+    echo "HINWEIS: Der Rollback wurde vor dem Stoppen abgebrochen. Bitte mit der aktuellen Studio-Version einen neuen Checkpoint erstellen."
+    exit 10
+}
+
+echo "Gefundener Checkpoint:"
+as_root cat "$CHECKPOINT/created-at" 2>/dev/null || true
+progress 10 "Stoppe ioBroker …"
+echo "Stoppe ioBroker ..."
+iobroker stop || iob stop || {
+    echo "FEHLER: ioBroker konnte nicht gestoppt werden."
+    exit 3
+}
+STOPPED=true
+
+progress 30 "Bereite sicheren Dateitausch vor …"
+as_iobroker rm -rf "$RESTORE_TEMP" || exit 4
+as_iobroker mkdir -p "$RESTORE_TEMP"
+
+echo "Tausche den aktuellen Zustand gegen den Checkpoint ..."
+[ -d "$IOB_DIR/iobroker-data" ] &&
+    as_iobroker mv "$IOB_DIR/iobroker-data" "$RESTORE_TEMP/iobroker-data"
+[ -d "$IOB_DIR/node_modules" ] &&
+    as_iobroker mv "$IOB_DIR/node_modules" "$RESTORE_TEMP/node_modules"
+for root_file in package.json package-lock.json; do
+    [ -f "$IOB_DIR/$root_file" ] && as_iobroker mv "$IOB_DIR/$root_file" "$RESTORE_TEMP/$root_file"
+done
+CURRENT_MOVED=true
+
+progress 35 "Kopiere iobroker-data zurück …"
+copy_tree "$CHECKPOINT/iobroker-data" "$IOB_DIR/iobroker-data" 35 57 "iobroker-data" || {
+    undo_swap
+    exit 5
+}
+if [ -d "$CHECKPOINT/node_modules" ]; then
+    progress 57 "Kopiere node_modules zurück …"
+    copy_tree "$CHECKPOINT/node_modules" "$IOB_DIR/node_modules" 57 82 "node_modules" || {
+        undo_swap
+        exit 5
+    }
+else
+    progress 82 "node_modules ist im Checkpoint nicht enthalten"
+fi
+for root_file in package.json package-lock.json; do
+    if [ -f "$CHECKPOINT/$root_file" ]; then
+        as_iobroker cp -a "$CHECKPOINT/$root_file" "$IOB_DIR/$root_file" || {
+            undo_swap
+            exit 5
+        }
+    fi
+done
+SWAPPED=true
+
+progress 84 "Checkpoint wurde vollständig kopiert"
+progress 86 "Prüfe die wiederhergestellten Dateien …"
+[ -d "$IOB_DIR/iobroker-data" ] || { echo "FEHLER: Nach dem Tausch fehlt iobroker-data."; undo_swap; exit 6; }
+
+progress 90 "Starte ioBroker …"
+echo "Starte den wiederhergestellten ioBroker ..."
+if ! start_iobroker; then
+    undo_swap
+    exit 7
+fi
+
+progress 95 "ioBroker läuft – räume die vorübergehende Rückfallsicherung auf …"
+as_iobroker rm -rf "$RESTORE_TEMP" || {
+    echo "WARNUNG: ioBroker laeuft, aber der temporaere Arbeitsordner konnte nicht entfernt werden: $RESTORE_TEMP"
+}
+progress 100 "Vollständig fertig – ioBroker läuft und der Checkpoint bleibt erhalten"
+echo "Schnell-Rollback abgeschlossen. Der Checkpoint wurde kopiert und bleibt fuer eine erneute Verwendung erhalten."
+IOBROKER_STUDIO_ROLLBACK

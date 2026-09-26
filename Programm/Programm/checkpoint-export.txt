@@ -1,0 +1,89 @@
+bash -s <<'IOBROKER_STUDIO_EXPORT'
+#!/usr/bin/env bash
+set -u
+
+IOB_DIR=/opt/iobroker
+CHECKPOINT="$IOB_DIR/.studio-checkpoint"
+ARCHIVE="$HOME/.iobroker-studio-checkpoint.tar.gz"
+ROOT_MODE=none
+
+as_root() {
+    case "$ROOT_MODE" in
+        root) "$@" ;;
+        sudo) sudo "$@" ;;
+        doas) doas "$@" ;;
+        *) "$@" ;;
+    esac
+}
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+[ -d "$CHECKPOINT/iobroker-data" ] || {
+    echo "FEHLER: Es ist kein gueltiger Schnell-Checkpoint vorhanden."
+    exit 2
+}
+
+if find "$CHECKPOINT" -xdev -print >/dev/null 2>&1; then
+    ROOT_MODE=none
+elif [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root
+elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo
+elif command -v doas >/dev/null 2>&1 && doas true; then ROOT_MODE=doas
+else
+    echo "FEHLER: Der Checkpoint ist nicht lesbar und sudo/doas funktioniert nicht."
+    exit 7
+fi
+
+rm -f "$ARCHIVE" 2>/dev/null || {
+    echo "FEHLER: Die temporaere Download-Datei kann nicht ersetzt werden."
+    exit 8
+}
+: > "$ARCHIVE" || {
+    echo "FEHLER: Der SSH-Benutzer darf keine temporaere Download-Datei in seinem Home anlegen."
+    exit 8
+}
+
+set -- iobroker-data
+[ -d "$CHECKPOINT/node_modules" ] && set -- "$@" node_modules
+for root_file in package.json package-lock.json; do
+    [ -f "$CHECKPOINT/$root_file" ] && set -- "$@" "$root_file"
+done
+
+total_kib="$(cd "$CHECKPOINT" && as_root du -sk "$@" 2>/dev/null | awk '{sum += $1} END {print sum}')"
+[ -n "$total_kib" ] && [ "$total_kib" -gt 0 ] 2>/dev/null || total_kib=1
+echo "Das Download-Haekchen ist gesetzt: Packe den einen Checkpoint fuer Windows ..."
+as_root tar -C "$CHECKPOINT" -czf - "$@" > "$ARCHIVE" &
+pack_pid=$!
+started_at="$(date +%s)"
+while kill -0 "$pack_pid" 2>/dev/null; do
+    elapsed=$(( $(date +%s) - started_at ))
+    archive_bytes="$(stat -c '%s' "$ARCHIVE" 2>/dev/null || printf 0)"
+    archive_mib=$((archive_bytes / 1048576))
+    progress 40 "Packe Checkpoint fuer Windows: ${archive_mib} MiB, ${elapsed}s …"
+    sleep 2
+done
+wait "$pack_pid" || {
+    rm -f "$ARCHIVE"
+    echo "FEHLER: Der Checkpoint konnte nicht fuer Windows gepackt werden."
+    exit 4
+}
+
+progress 90 "Prüfe die gerade gepackte Datei einmalig …"
+as_root tar -tzf "$ARCHIVE" >/dev/null || {
+    rm -f "$ARCHIVE"
+    echo "FEHLER: Die gerade gepackte Download-Datei ist nicht lesbar."
+    exit 5
+}
+test -s "$ARCHIVE" || exit 6
+chmod 600 "$ARCHIVE" || exit 9
+archive_owner="$(stat -c '%U' "$ARCHIVE" 2>/dev/null || true)"
+[ "$archive_owner" = "$(id -un)" ] || {
+    rm -f "$ARCHIVE"
+    echo "FEHLER: Die Download-Datei gehoert nicht dem SSH-Benutzer."
+    exit 10
+}
+
+progress 100 "Gepackte Datei ist zum Windows-Download bereit"
+echo "SFTP-Pfad: .iobroker-studio-checkpoint.tar.gz"
+IOBROKER_STUDIO_EXPORT

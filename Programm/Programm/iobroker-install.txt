@@ -1,0 +1,147 @@
+bash -s <<'IOBROKER_TOOL_INSTALL'
+#!/usr/bin/env bash
+set -u
+
+INSTALLER_URL="https://iobroker.net/install.sh"
+INSTALLER_FILE="/tmp/iobroker-installer.$$"
+LOG_FILE="/tmp/iobroker-tool-install-$(date +%Y%m%d-%H%M%S).log"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+cleanup() {
+    rm -f "$INSTALLER_FILE"
+}
+trap cleanup EXIT
+
+progress() {
+    printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
+}
+
+as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        doas "$@"
+    fi
+}
+
+download() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 15 --retry 2 --retry-delay 2 \
+            "$INSTALLER_URL" -o "$INSTALLER_FILE"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$INSTALLER_FILE" "$INSTALLER_URL"
+    else
+        echo "FEHLER: Weder curl noch wget ist installiert."
+        return 127
+    fi
+}
+
+echo "ioBroker Studio - offizielle Neuinstallation"
+echo "Protokoll: $LOG_FILE"
+echo
+
+progress 3 "Prüfe Betriebssystem …"
+case "$(uname -s)" in
+    Linux|Darwin|FreeBSD) ;;
+    *)
+        echo "FEHLER: Dieses Betriebssystem wird vom ioBroker-Installer nicht unterstuetzt."
+        exit 42
+        ;;
+esac
+
+progress 7 "Prüfe Systemarchitektur …"
+if [ "$(getconf LONG_BIT 2>/dev/null || printf 0)" -ne 64 ]; then
+    echo "FEHLER: Aktuelles ioBroker benoetigt ein 64-Bit-Betriebssystem."
+    exit 43
+fi
+
+progress 11 "Prüfe vorhandene Installation …"
+if [ -d /opt/iobroker ] && {
+    command -v iobroker >/dev/null 2>&1 ||
+    [ -d /opt/iobroker/iobroker-data ]
+}; then
+    echo "FEHLER: Auf diesem System existiert bereits eine ioBroker-Installation."
+    echo "Eine Neuinstallation wuerde das vorhandene System gefaehrden."
+    echo "Bitte in ioBroker Studio die Kachel \"Reparatur & Upgrade\" verwenden."
+    exit 44
+fi
+
+ROOT_MODE=none
+if [ "$(id -u)" -eq 0 ]; then
+    ROOT_MODE=root
+elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then
+    ROOT_MODE=sudo
+elif command -v doas >/dev/null 2>&1 && doas true; then
+    ROOT_MODE=doas
+else
+    echo "FEHLER: Die Installation benoetigt Administratorrechte, aber sudo/doas fehlt, ist nicht erlaubt oder das Passwort wurde abgelehnt."
+    echo "HINWEIS: Es wurde noch nichts heruntergeladen oder veraendert."
+    exit 45
+fi
+
+echo "System:"
+uname -a
+if [ -r /etc/os-release ]; then
+    sed -n 's/^PRETTY_NAME=//p' /etc/os-release | head -n 1
+fi
+echo
+
+progress 16 "Lade offiziellen ioBroker-Installer …"
+echo "Lade den jeweils aktuellen Installer von $INSTALLER_URL ..."
+download || exit 46
+test -s "$INSTALLER_FILE" || {
+    echo "FEHLER: Der heruntergeladene Installer ist leer."
+    exit 47
+}
+
+progress 22 "Prüfe den Installer …"
+if ! head -n 1 "$INSTALLER_FILE" | grep -qE '^#!.*/(env +)?bash'; then
+    echo "FEHLER: Die heruntergeladene Datei sieht nicht wie ein Bash-Installer aus."
+    exit 48
+fi
+
+chmod 700 "$INSTALLER_FILE"
+progress 28 "Offizieller ioBroker-Installer läuft …"
+echo "Starte offiziellen ioBroker-Installer ..."
+echo
+if [ "$ROOT_MODE" = root ] || [ "$ROOT_MODE" = sudo ]; then
+    # Als normaler Benutzer fordert der Installer sudo bei Bedarf selbst an.
+    bash "$INSTALLER_FILE"
+else
+    # doas-Fallback fuer Systeme ohne sudo; der Installer laeuft dann als root.
+    doas bash "$INSTALLER_FILE"
+fi
+INSTALL_RESULT=$?
+
+if [ "$INSTALL_RESULT" -ne 0 ]; then
+    echo
+    echo "FEHLER: Der offizielle Installer endete mit Code $INSTALL_RESULT."
+    exit "$INSTALL_RESULT"
+fi
+
+progress 91 "Prüfe offiziellen ioBroker-Benutzer …"
+id iobroker >/dev/null 2>&1 || {
+    echo "FEHLER: Der offizielle Installer endete ohne den erwarteten Benutzer iobroker."
+    exit 49
+}
+
+progress 95 "Kontrolliere die Installation …"
+echo
+echo "Installationskontrolle:"
+if command -v iobroker >/dev/null 2>&1; then
+    iobroker version || true
+    iobroker status || true
+elif command -v iob >/dev/null 2>&1; then
+    iob version || true
+    iob status || true
+else
+    echo "WARNUNG: Installation lief durch, aber iobroker/iob ist noch nicht im PATH."
+fi
+
+echo
+progress 100 "Installation abgeschlossen"
+echo "Installation abgeschlossen. Protokoll: $LOG_FILE"
+IOBROKER_TOOL_INSTALL

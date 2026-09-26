@@ -1,0 +1,23 @@
+ioBroker Studio verwendet Open-Source-Komponenten.
+
+Avalonia UI
+Copyright (c) AvaloniaUI
+MIT License: https://github.com/AvaloniaUI/Avalonia/blob/master/licence.md
+
+AvaloniaTerminal
+Copyright (c) Ivan Josipovic
+MIT License: https://github.com/IvanJosipovic/AvaloniaTerminal
+
+XTerm.NET
+Copyright (c) Tom Laird-McConnell
+MIT License: https://github.com/tomlm/XTerm.NET
+
+SSH.NET
+Copyright (c) Renci and SSH.NET contributors
+MIT License: https://github.com/sshnet/SSH.NET
+
+.NET Runtime
+Copyright (c) .NET Foundation and Contributors
+MIT License: https://github.com/dotnet/runtime
+
+Die vollständigen Lizenztexte sind über die genannten Projektseiten abrufbar.

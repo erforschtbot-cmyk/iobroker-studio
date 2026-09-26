@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -u
+
+progress() { printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"; }
+
+progress 5 "Suche den offiziellen Befehl iob diag …"
+
+if command -v iob >/dev/null 2>&1; then
+    IOB_CMD="$(command -v iob)"
+elif command -v iobroker >/dev/null 2>&1; then
+    IOB_CMD="$(command -v iobroker)"
+elif [ -x /opt/iobroker/iobroker ]; then
+    IOB_CMD=/opt/iobroker/iobroker
+else
+    printf 'Der ioBroker-Befehl iob beziehungsweise iobroker wurde nicht gefunden.\n' >&2
+    exit 127
+fi
+
+progress 10 "Starte die offizielle ioBroker-Diagnose …"
+printf 'Die folgende Ausgabe stammt unverändert von: %s diag\n\n' "$IOB_CMD"
+
+# iob diag wartet bei seiner Auswahl auf Enter. Eine leere Eingabe wählt genau
+# den Standard, den der Benutzer auch bei einem manuellen Aufruf erhält.
+# stdout/stderr bleiben direkt verbunden, damit der Fortschritt live sichtbar ist.
+printf '\n' | TERM=dumb "$IOB_CMD" diag 2>&1
+diag_result=${PIPESTATUS[1]}
+
+if [ "$diag_result" -ne 0 ]; then
+    printf '\nDie offizielle ioBroker-Diagnose endete mit Exitcode %s.\n' "$diag_result" >&2
+    exit "$diag_result"
+fi
+
+progress 100 "Offizielle ioBroker-Diagnose abgeschlossen"
