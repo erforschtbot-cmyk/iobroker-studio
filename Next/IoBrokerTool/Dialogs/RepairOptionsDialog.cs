@@ -10,7 +10,9 @@ public sealed record RepairOptions(
     bool UpdateNode,
     bool UpdateController,
     bool RebuildNativeModules,
-    bool UpdateAdapters)
+    bool UpdateAdapters,
+    bool SetServerBootTarget,
+    bool UpdateSystemPackages)
 {
     public IEnumerable<string> SelectedLabels()
     {
@@ -19,6 +21,8 @@ public sealed record RepairOptions(
         if (UpdateController) yield return "JS-Controller aktualisieren";
         if (RebuildNativeModules) yield return "Native Module neu bauen";
         if (UpdateAdapters) yield return "Adapter aktualisieren";
+        if (SetServerBootTarget) yield return "Boot-Ziel auf Serverbetrieb";
+        if (UpdateSystemPackages) yield return "Systempakete aktualisieren";
     }
 }
 
@@ -29,6 +33,8 @@ public sealed class RepairOptionsDialog : Window
     private readonly CheckBox _updateController;
     private readonly CheckBox _rebuildNativeModules;
     private readonly CheckBox _updateAdapters;
+    private readonly CheckBox _serverBootTarget;
+    private readonly CheckBox _systemPackages;
     private readonly TextBlock _validation;
 
     public RepairOptionsDialog()
@@ -55,6 +61,16 @@ public sealed class RepairOptionsDialog : Window
         _updateAdapters = CreateOption(
             "Adapter aktualisieren",
             "Repository aktualisieren und verfügbare Adapterupdates installieren.");
+        _serverBootTarget = CreateOption(
+            "Boot-Ziel auf Serverbetrieb",
+            "Stellt multi-user.target ein, wenn das System mit grafischer Oberfläche startet. " +
+            "Wirkt erst beim nächsten Neustart des Linux-Systems.");
+        _serverBootTarget.IsChecked = false;
+        _systemPackages = CreateOption(
+            "Systempakete aktualisieren",
+            "Führt das reguläre Paket-Update der Linux-Distribution aus (ohne Distributionswechsel). " +
+            "Ein Neustart des Systems kann danach nötig sein.");
+        _systemPackages.IsChecked = false;
 
         _validation = new TextBlock
         {
@@ -87,8 +103,9 @@ public sealed class RepairOptionsDialog : Window
                 },
                 new TextBlock
                 {
-                    Text = "Alle Stufen sind vorausgewählt und entsprechen dem vollständigen bisherigen Reparaturlauf. " +
-                           "Nicht benötigte Stufen kannst du abwählen.",
+                    Text = "Alle ioBroker-Stufen sind vorausgewählt und entsprechen dem vollständigen bisherigen Reparaturlauf. " +
+                           "Nicht benötigte Stufen kannst du abwählen. Die beiden letzten Stufen betreffen " +
+                           "das Linux-System und sind deshalb standardmäßig abgewählt.",
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = Brush.Parse("#B6C2D2"),
                     LineHeight = 22
@@ -98,10 +115,13 @@ public sealed class RepairOptionsDialog : Window
                 _updateController,
                 _rebuildNativeModules,
                 _updateAdapters,
+                _serverBootTarget,
+                _systemPackages,
                 _validation,
                 new TextBlock
                 {
-                    Text = "Systemdiagnose, kontrolliertes Stoppen, Endkontrolle und Wiederstart werden immer ausgeführt.",
+                    Text = "Systemdiagnose, kontrolliertes Stoppen, Endkontrolle und Wiederstart werden immer ausgeführt. " +
+                           "Rückfragen des offiziellen ioBroker-Fixers werden ohne Eingabe mit „Nein“ beantwortet.",
                     TextWrapping = TextWrapping.Wrap,
                     Foreground = Brush.Parse("#8FA1B8")
                 },
@@ -136,7 +156,9 @@ public sealed class RepairOptionsDialog : Window
             _updateNode.IsChecked == true,
             _updateController.IsChecked == true,
             _rebuildNativeModules.IsChecked == true,
-            _updateAdapters.IsChecked == true);
+            _updateAdapters.IsChecked == true,
+            _serverBootTarget.IsChecked == true,
+            _systemPackages.IsChecked == true);
         if (!result.SelectedLabels().Any())
         {
             _validation.Text = "Bitte mindestens eine Reparaturstufe auswählen.";

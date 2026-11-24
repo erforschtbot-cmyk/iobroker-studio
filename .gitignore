@@ -12,3 +12,14 @@ desktop.ini
 # Lokale Zugangsdaten / Einstellungen
 *.secrets
 appsettings.*.json
+
+# Verschachtelte .NET-Builds und Python-Testcache
+**/bin/
+**/obj/
+__pycache__/
+
+# Build- und Release-Artefakte (nicht versionieren)
+/publish-*/
+
+/audit/
+/release/

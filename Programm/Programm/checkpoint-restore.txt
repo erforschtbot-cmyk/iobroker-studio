@@ -35,6 +35,15 @@ progress() {
     printf 'STUDIO_PROGRESS|%s|%s\n' "$1" "$2"
 }
 
+# GNU find stellt beim Programmende sein Startverzeichnis per fchdir wieder her.
+# Ist das Home des SSH-Benutzers fuer iobroker gesperrt (z. B. /home/pi mit Modus
+# 700), scheitert find mit Exitcode 1 ("Failed to restore initial working
+# directory: /home/pi: Permission denied"), obwohl die Quelle vollstaendig lesbar
+# ist. Pruefungen laufen deshalb immer aus einem neutralen Arbeitsverzeichnis.
+as_iobroker_in_root() {
+    as_iobroker sh -c 'cd / && exec "$@"' sh "$@"
+}
+
 copy_tree() {
     source_path=$1
     target_path=$2
@@ -109,12 +118,16 @@ else
     echo "HINWEIS: ioBroker wurde nicht gestoppt und nichts wurde veraendert."
     exit 8
 fi
-as_iobroker mkdir "$PREFLIGHT" 2>/dev/null && as_iobroker rm -rf "$PREFLIGHT" 2>/dev/null || {
-    as_root rm -rf "$PREFLIGHT" 2>/dev/null || true
+as_iobroker mkdir "$PREFLIGHT" && as_iobroker rm -rf "$PREFLIGHT" || {
+    as_root rm -rf "$PREFLIGHT" || true
     echo "FEHLER: Schreibtest als Benutzer iobroker fuer den Rollback fehlgeschlagen. ioBroker wurde nicht gestoppt."
     exit 9
 }
-wrong_checkpoint_owner="$(as_iobroker find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit 2>/dev/null || true)"
+wrong_checkpoint_owner="$(as_iobroker_in_root find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit)" || {
+    echo "FEHLER: Die Besitzerpruefung des Checkpoints konnte nicht ausgefuehrt werden."
+    echo "HINWEIS: Der Rollback wurde vor dem Stoppen abgebrochen."
+    exit 10
+}
 [ -z "$wrong_checkpoint_owner" ] || {
     echo "FEHLER: Der Checkpoint enthaelt eine Datei, die nicht iobroker gehoert: $wrong_checkpoint_owner"
     echo "HINWEIS: Der Rollback wurde vor dem Stoppen abgebrochen. Bitte mit der aktuellen Studio-Version einen neuen Checkpoint erstellen."

@@ -16,6 +16,25 @@ public sealed class DesktopService
         Start(new ProcessStartInfo(path) { UseShellExecute = true });
     }
 
+    /// Oeffnet eine Datei mit dem Standardprogramm des Systems. Fehlt sie,
+    /// wird der umgebende Ordner geoeffnet, damit der Aufruf nie ins Leere laeuft.
+    public void OpenFileOrFolder(string filePath)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+            {
+                Start(new ProcessStartInfo(filePath) { UseShellExecute = true });
+                return;
+            }
+            OpenFolder(Path.GetDirectoryName(filePath) ?? ".");
+        }
+        catch
+        {
+            OpenFolder(Path.GetDirectoryName(filePath) ?? ".");
+        }
+    }
+
     public bool OpenTerminal(ConnectionProfile profile)
     {
         var putty = FindExecutable(

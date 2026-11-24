@@ -70,6 +70,12 @@ public sealed class HelpDialog : Window
                     "native npm-Module und Adapter. Die einzelnen Schritte laufen möglichst weiter, " +
                     "Nach dem Anklicken kannst du Basisreparatur, Node.js, JS-Controller, native Module " +
                     "und Adapter einzeln an- oder abwählen. Sind alle Haken gesetzt, läuft die vollständige Reparatur. " +
+                    "Zusätzlich stehen zwei Stufen für das Linux-System bereit: „Boot-Ziel auf Serverbetrieb“ " +
+                    "stellt multi-user.target ein, wenn der Rechner mit grafischer Oberfläche startet, und " +
+                    "„Systempakete aktualisieren“ führt das reguläre Paket-Update der Distribution aus. " +
+                    "Beide sind standardmäßig abgewählt und wirken erst beim nächsten Neustart. " +
+                    "Rückfragen des offiziellen ioBroker-Fixers werden ohne Eingabe mit „Nein“ beantwortet, " +
+                    "damit der Lauf nicht auf eine Tastatureingabe wartet. " +
                     "Die gewählten Schritte laufen möglichst weiter, auch wenn eine Nebenstufe fehlschlägt. " +
                     "Wirklich fehlgeschlagen ist die Reparatur " +
                     "erst, wenn ioBroker am Ende nicht mehr startet."),

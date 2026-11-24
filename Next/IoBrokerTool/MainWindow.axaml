@@ -230,20 +230,31 @@
           </Border>
         </Grid>
 
+        <TextBox x:Name="OperationFindingsBox" IsReadOnly="True" AcceptsReturn="True"
+                 IsVisible="False" TextWrapping="Wrap" MaxHeight="220"
+                 Foreground="#FFD28A" Background="#201A14" Padding="12"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 ToolTip.Tip="Erkannte Fehler und Hinweise der letzten Aktion mit Arbeitsschritt. Bleiben auch nach Abschluss sichtbar." />
         <Border Classes="card" Padding="0">
           <Grid RowDefinitions="Auto,*">
-            <Grid Background="#101824" ColumnDefinitions="*,Auto,Auto" Margin="18,13">
+            <Grid Background="#101824" ColumnDefinitions="*,Auto,Auto,Auto,Auto" Margin="18,13">
               <StackPanel Orientation="Horizontal" Spacing="10">
                 <Ellipse Width="8" Height="8" Fill="#18A999" VerticalAlignment="Center" />
                 <TextBlock Text="Live-Protokoll" FontWeight="Bold" Foreground="#DCE5F1" />
                 <TextBlock x:Name="OperationLabel" Text="Bereit" Classes="muted" />
               </StackPanel>
-              <Button Grid.Column="1" Classes="secondary" Content="Leeren"
-                      Padding="10,5" Click="OnClearLog"
-                      ToolTip.Tip="Entfernt nur die sichtbaren Einträge aus dem Live-Protokoll." />
-              <Button Grid.Column="2" Classes="secondary" Content="Speichern"
+              <Button Grid.Column="1" Classes="primary" Content="Log öffnen"
+                      Padding="12,5" Click="OnOpenCurrentLog"
+                      ToolTip.Tip="Öffnet die Protokolldatei dieser Sitzung im Standardprogramm. Jede Aktion wird automatisch mitgeschrieben, auch Fehler, die im Fenster später nicht mehr sichtbar sind." />
+              <Button Grid.Column="2" Classes="secondary" Content="Ordner"
+                      Padding="10,5" Margin="8,0,0,0" Click="OnOpenLogFolder"
+                      ToolTip.Tip="Öffnet den Ordner mit allen Protokolldateien früherer Sitzungen." />
+              <Button Grid.Column="3" Classes="secondary" Content="Leeren"
+                      Padding="10,5" Margin="8,0,0,0" Click="OnClearLog"
+                      ToolTip.Tip="Entfernt nur die sichtbaren Einträge aus dem Live-Protokoll. Die Protokolldatei bleibt vollständig erhalten." />
+              <Button Grid.Column="4" Classes="secondary" Content="Speichern"
                       Padding="10,5" Margin="8,0,0,0" Click="OnSaveLog"
-                      ToolTip.Tip="Speichert das Live-Protokoll als Datei, zum Beispiel für eine Fehlersuche." />
+                      ToolTip.Tip="Speichert das Live-Protokoll zusätzlich als Datei an einem Ort deiner Wahl." />
             </Grid>
             <TextBox Grid.Row="1" x:Name="LogBox" IsReadOnly="True"
                      AcceptsReturn="True" TextWrapping="NoWrap"
@@ -289,6 +300,10 @@
                    Background="#080D14" BorderBrush="#26364C" BorderThickness="1"
                    Padding="12" ScrollViewer.VerticalScrollBarVisibility="Auto"
                    ToolTip.Tip="Zeigt live, welcher Arbeitsschritt gerade auf dem Linux-System ausgeführt wird." />
+          <TextBox x:Name="BusyFindingsBox" IsReadOnly="True" AcceptsReturn="True"
+                   IsVisible="False" TextWrapping="Wrap" MaxHeight="160"
+                   Foreground="#FFD28A" Background="#201A14" Padding="12"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto" />
           <Button x:Name="CancelOperationButton" Classes="danger" Content="Abbrechen" HorizontalAlignment="Center"
                   Click="OnCancelOperation"
                   ToolTip.Tip="Fordert den kontrollierten Abbruch der gerade laufenden Aktion an." />

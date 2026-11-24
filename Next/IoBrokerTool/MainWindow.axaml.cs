@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private readonly SshService _ssh = new();
     private readonly EmbeddedTerminalService _embeddedTerminal = new();
     private readonly DesktopService _desktop = new();
+    private readonly LogFileService _logFile = new();
     private Window? _detachedTerminalWindow;
     private AppSettings _settings;
     private CancellationTokenSource? _operationCancellation;
@@ -42,6 +43,7 @@ public partial class MainWindow : Window
     private string _currentOperationText = "";
     private readonly List<string> _operationIssues = [];
     private readonly List<string> _remoteFailures = [];
+    private readonly Queue<string> _remoteOutputTail = new();
     private readonly List<string> _diagnosticEntries = [];
 
     public MainWindow()
@@ -51,7 +53,10 @@ public partial class MainWindow : Window
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion.Split('+')[0] ?? "unbekannt";
         VersionText.Text = $"v{productVersion} · 64-Bit";
+        // Einstellungen zuerst laden: _settings ist vorher null, und der
+        // Protokollkopf braucht Host und Benutzer von dort.
         _settings = _settingsService.Load();
+        _logFile.Start(productVersion, $"{_settings.Username}@{_settings.Host}:{_settings.Port}");
         HostBox.Text = _settings.Host;
         UserBox.Text = _settings.Username;
         PortBox.Text = _settings.Port.ToString();
@@ -466,12 +471,34 @@ public partial class MainWindow : Window
         await RunUiOperation("ioBroker wird repariert …", async token =>
         {
             AppendLog($"Gewählte Reparaturstufen: {selected}");
+
+            // Die Reparatur stoppt ioBroker und kann Node.js austauschen. Ohne
+            // vorherigen Checkpoint gaebe es keinen Rueckweg; deshalb entsteht er
+            // hier zwingend, bevor das Reparaturskript ueberhaupt startet.
+            if (options.SelectedLabels().Any())
+            {
+                SetOperationText("Pflicht-Checkpoint wird vor der Reparatur erstellt …");
+                AppendLog("Pflicht-Checkpoint: Zustand wird vor dem ersten Eingriff gesichert.");
+                var checkpointExit = await _ssh.ExecuteScriptAsync(
+                    profile, ScriptResources.Load("checkpoint-create.sh"), AppendRemote, token);
+                if (checkpointExit != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Der Pflicht-Checkpoint konnte nicht erstellt werden. " +
+                        "Die Reparatur wurde abgebrochen, bevor ioBroker gestoppt oder verändert wurde.\n\n" +
+                        ScriptFailure("Checkpoint vor der Reparatur", checkpointExit));
+                }
+                AppendLog("Pflicht-Checkpoint steht bereit; die Reparatur wird fortgesetzt.");
+            }
+
             var repairScript =
                 $"export STUDIO_REPAIR_BASE={(options.BaseRepair ? 1 : 0)}\n" +
                 $"export STUDIO_REPAIR_NODE={(options.UpdateNode ? 1 : 0)}\n" +
                 $"export STUDIO_REPAIR_CONTROLLER={(options.UpdateController ? 1 : 0)}\n" +
                 $"export STUDIO_REPAIR_NATIVE={(options.RebuildNativeModules ? 1 : 0)}\n" +
                 $"export STUDIO_REPAIR_ADAPTERS={(options.UpdateAdapters ? 1 : 0)}\n" +
+                $"export STUDIO_REPAIR_BOOTTARGET={(options.SetServerBootTarget ? 1 : 0)}\n" +
+                $"export STUDIO_REPAIR_OSUPDATES={(options.UpdateSystemPackages ? 1 : 0)}\n" +
                 ScriptResources.Load("repair.sh");
             var exitCode = await _ssh.ExecuteScriptAsync(
                 profile, repairScript, AppendRemote, token);
@@ -496,8 +523,8 @@ public partial class MainWindow : Window
                     : string.Join(Environment.NewLine, _operationIssues);
                 throw new InvalidOperationException(
                     exitCode == 20
-                        ? $"ioBroker konnte nach der Reparatur nicht gestartet werden.\n\n{issueText}"
-                        : $"Reparaturlauf wurde unerwartet mit Code {exitCode} beendet. Details siehe Protokoll.");
+                        ? ScriptFailure("Reparatur – ioBroker konnte nicht gestartet werden", exitCode) + $"\n\n{issueText}"
+                        : ScriptFailure("Reparatur", exitCode));
             }
             AppendLog("Reparatur ohne erkannten Fehler abgeschlossen.");
         });
@@ -563,7 +590,7 @@ public partial class MainWindow : Window
                     _ => $"Der offizielle ioBroker-Installer wurde mit Code {exitCode} beendet. " +
                          "Die genaue Ursache steht unmittelbar darüber im Live-Protokoll."
                 };
-                throw new InvalidOperationException(message);
+                throw new InvalidOperationException(message + "\n\n" + ScriptFailure("Installation", exitCode));
             }
             AppendLog("ioBroker-Installation erfolgreich abgeschlossen.");
         });
@@ -622,6 +649,16 @@ public partial class MainWindow : Window
 
     private void OnClearLog(object? sender, RoutedEventArgs e) => LogBox.Text = "";
 
+    private void OnOpenLogFolder(object? sender, RoutedEventArgs e) =>
+        _desktop.OpenFolder(_logFile.LogDirectory);
+
+    private void OnOpenCurrentLog(object? sender, RoutedEventArgs e)
+    {
+        _logFile.EnsureFile();
+        AppendLog($"Protokolldatei geöffnet: {_logFile.FilePath}");
+        _desktop.OpenFileOrFolder(_logFile.FilePath);
+    }
+
     private async void OnSaveLog(object? sender, RoutedEventArgs e)
     {
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
@@ -652,11 +689,15 @@ public partial class MainWindow : Window
         }
         _operationCancellation = new CancellationTokenSource();
         _currentOperationText = title;
+        _logFile.Section(title);
         _lastOperationActivity = DateTimeOffset.Now;
         BusyText.Text = title;
         BusyDetailBox.Text = "";
+        OperationFindingsBox.Text = BusyFindingsBox.Text = "";
+        OperationFindingsBox.IsVisible = BusyFindingsBox.IsVisible = false;
         _operationIssues.Clear();
         _remoteFailures.Clear();
+        _remoteOutputTail.Clear();
         _diagnosticEntries.Clear();
         BusyProgress.IsIndeterminate = true;
         BusyProgress.Value = 0;
@@ -679,17 +720,26 @@ public partial class MainWindow : Window
         try
         {
             await operation(_operationCancellation.Token);
-            OperationLabel.Text = $"Abgeschlossen in {stopwatch.Elapsed:mm\\:ss}";
+            // Drain queued remote output before computing the final result.
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+            OperationLabel.Text = $"Abgeschlossen in {stopwatch.Elapsed:mm\\:ss}" +
+                (OperationFindingsBox.IsVisible ? " – Fehler/Hinweise beachten" : "");
+            _logFile.Footer($"Abgeschlossen in {stopwatch.Elapsed:mm\\:ss}" +
+                (OperationFindingsBox.IsVisible ? " – mit Fehlern/Hinweisen" : ""));
         }
         catch (OperationCanceledException)
         {
             AppendLog("Aktion abgebrochen.");
+            _logFile.Footer("Abgebrochen");
             OperationLabel.Text = "Abgebrochen";
         }
         catch (Exception ex)
         {
             AppendLog($"FEHLER: {ex.Message}");
             AppendLog(ex.ToString());
+            RecordFinding($"FEHLER: {ex.Message}");
+            _logFile.Raw($"\n!!! FEHLER: {ex.Message}\n{ex}");
+            _logFile.Footer("Fehler");
             OperationLabel.Text = "Fehler";
             await ShowInfo("Aktion fehlgeschlagen", ex.Message);
         }
@@ -715,7 +765,7 @@ public partial class MainWindow : Window
 
     private void AppendRemote(string text)
     {
-        Dispatcher.UIThread.Post(() =>
+        Dispatcher.UIThread.Invoke(() =>
         {
             if (!string.IsNullOrEmpty(text))
                 _lastOperationActivity = DateTimeOffset.Now;
@@ -723,6 +773,11 @@ public partial class MainWindow : Window
             var password = PasswordBox.Text;
             if (!string.IsNullOrEmpty(password))
                 safeText = safeText.Replace(password, "********", StringComparison.Ordinal);
+            _logFile.Raw(safeText);
+            var currentProgress = RemoteProgress.Matches(safeText).LastOrDefault();
+            if (currentProgress is not null)
+                SetProgressUi(Math.Clamp(int.Parse(currentProgress.Groups[1].Value), 0, 100),
+                    currentProgress.Groups[2].Value.Trim());
             var visibleText = RemoteProgress.Replace(safeText, "");
             foreach (Match diagnostic in RemoteDiagnostic.Matches(visibleText))
             {
@@ -733,6 +788,7 @@ public partial class MainWindow : Window
                     $"Original: {diagnostic.Groups[5].Value}";
                 if (!_diagnosticEntries.Contains(entry))
                     _diagnosticEntries.Add(entry);
+                RecordFinding(entry);
             }
             visibleText = RemoteDiagnostic.Replace(visibleText, "");
             visibleText = Regex.Replace(visibleText, @"STUDIO_DIAG_SUMMARY\|\d+\r?\n?", "");
@@ -741,6 +797,7 @@ public partial class MainWindow : Window
                 var item = $"Fehler {issue.Groups[1].Value}: {issue.Groups[2].Value.Trim()}";
                 if (!_operationIssues.Contains(item))
                     _operationIssues.Add(item);
+                RecordFinding(item);
             }
             visibleText = RemoteIssue.Replace(visibleText, "");
             visibleText = AnsiEscape.Replace(visibleText, "");
@@ -748,13 +805,17 @@ public partial class MainWindow : Window
             foreach (var line in visibleText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
             {
                 var trimmed = line.Trim();
-                if ((trimmed.Contains("FEHLER", StringComparison.OrdinalIgnoreCase) ||
-                     trimmed.Contains("Permission denied", StringComparison.OrdinalIgnoreCase) ||
-                     trimmed.Contains("Read-only file system", StringComparison.OrdinalIgnoreCase) ||
-                     trimmed.Contains("No space left", StringComparison.OrdinalIgnoreCase) ||
-                     trimmed.Contains("Input/output error", StringComparison.OrdinalIgnoreCase)) &&
-                    !_remoteFailures.Contains(trimmed))
-                    _remoteFailures.Add(trimmed);
+                _remoteOutputTail.Enqueue(trimmed);
+                while (_remoteOutputTail.Count > 20)
+                    _remoteOutputTail.Dequeue();
+                if (Regex.IsMatch(trimmed,
+                    @"(?i)(\b(fehler|error|failed|failure|fatal|warn|warning|warnung)\b|\[WARN\]|permission denied|access denied|read-only file system|no space left|input/output error|cannot |could not |nicht lesbar|nicht gefunden|fehlgeschlagen|verweigert)") &&
+                    !Regex.IsMatch(trimmed, @"(?i)(ohne (erkannten )?fehler|\b0 (errors?|fehler)\b)"))
+                {
+                    if (!_remoteFailures.Contains(trimmed))
+                        _remoteFailures.Add(trimmed);
+                    RecordFinding(trimmed);
+                }
             }
             LogBox.Text += visibleText;
             LogBox.CaretIndex = LogBox.Text?.Length ?? 0;
@@ -773,16 +834,29 @@ public partial class MainWindow : Window
         });
     }
 
+    private void RecordFinding(string text)
+    {
+        var entry = $"[{DateTime.Now:HH:mm:ss}] Schritt: {_currentOperationText}\n{text}\n\n";
+        OperationFindingsBox.Text += entry;
+        BusyFindingsBox.Text += entry;
+        OperationFindingsBox.IsVisible = BusyFindingsBox.IsVisible = true;
+        BusyFindingsBox.CaretIndex = BusyFindingsBox.Text?.Length ?? 0;
+    }
+
     private string ScriptFailure(string action, int exitCode)
     {
         var cause = _remoteFailures.Count == 0
             ? "Das Zielsystem lieferte keine zusätzliche Fehlerzeile. Das vollständige Live-Protokoll enthält die vorausgehenden Befehlsausgaben."
             : string.Join(Environment.NewLine, _remoteFailures.TakeLast(8));
-        return $"{action} fehlgeschlagen.\n\n{cause}\n\nTechnischer Exitcode: {exitCode}";
+        var context = string.Join(Environment.NewLine, _remoteOutputTail);
+        return $"{action} fehlgeschlagen.\nSchritt: {_currentOperationText}\n\n{cause}" +
+               $"\n\nLetzte Systemausgaben (vollständige Details im Live-Protokoll):\n{context}" +
+               $"\n\nTechnischer Exitcode: {exitCode}";
     }
 
     private void AppendLog(string message)
     {
+        _logFile.Line(message);
         Dispatcher.UIThread.Post(() =>
         {
             LogBox.Text += $"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}";

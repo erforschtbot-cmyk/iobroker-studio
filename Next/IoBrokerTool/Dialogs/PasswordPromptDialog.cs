@@ -10,7 +10,7 @@ public sealed class PasswordPromptDialog : Window
 {
     private readonly TextBox _passwordBox;
 
-    public PasswordPromptDialog(string username)
+    public PasswordPromptDialog(string username, string? hint = null)
     {
         Title = "Administrator-Passwort erforderlich";
         Width = 520;
@@ -68,6 +68,14 @@ public sealed class PasswordPromptDialog : Window
                     LineHeight = 22
                 },
                 _passwordBox,
+                new TextBlock
+                {
+                    Text = hint ?? "",
+                    IsVisible = !string.IsNullOrWhiteSpace(hint),
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = Brush.Parse("#FF8A8A"),
+                    LineHeight = 22
+                },
                 new TextBlock
                 {
                     Text = "Hinweis: Bei Linux bleibt die Passworteingabe normalerweise vollständig unsichtbar.",

@@ -8,7 +8,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>ioBroker Studio</AssemblyName>
     <RootNamespace>IoBrokerTool</RootNamespace>
-    <Version>1.2.28</Version>
+    <Version>1.2.39</Version>
     <Authors>Elzershark</Authors>
     <Product>ioBroker Studio</Product>
     <Description>Professional desktop toolkit for ioBroker maintenance.</Description>

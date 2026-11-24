@@ -1,4 +1,4 @@
-ioBroker Studio 1.2.28
+ioBroker Studio 1.2.39
 ===================
 
 Start
@@ -62,6 +62,16 @@ JS-Controller, native Module und Adapter. Alle Haken sind vorausgewählt und
 führen zusammen den vollständigen bisherigen Reparaturlauf aus. Einzelne
 Stufen können gezielt abgewählt werden. Systemdiagnose, kontrolliertes Stoppen,
 Endkontrolle und Wiederstart bleiben immer aktiv.
+
+Zwei weitere, standardmäßig abgewählte Stufen betreffen das Linux-System:
+"Boot-Ziel auf Serverbetrieb" stellt multi-user.target ein, wenn der Rechner mit
+grafischer Oberfläche startet, und "Systempakete aktualisieren" führt das
+reguläre Paket-Update der Distribution aus (ohne Distributionswechsel). Beide
+wirken erst beim nächsten Neustart.
+
+Rückfragen des offiziellen ioBroker-Fixers werden ohne Eingabe mit "Nein"
+beantwortet, damit der Lauf nicht auf eine Tastatureingabe wartet. Bewusste
+Entscheidungen trifft man über die beiden System-Stufen.
 
 Systemvoraussetzungen
 ---------------------

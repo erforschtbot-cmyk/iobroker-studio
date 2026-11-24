@@ -58,6 +58,18 @@ Build bricht sonst ab.
 Es wird **keine** Node.js-Version im Tool festgeschrieben; die jeweils offiziell
 empfohlene Version wird ermittelt.
 
+## Rückfragen des offiziellen Fixers (ab 1.2.39)
+
+`repair.txt` startet `https://iobroker.net/fix.sh` mit `</dev/null`. Der Fixer
+stellt im klassischen Modus Ja/Nein-Fragen per `read -n 1` von stdin; ohne
+Eingabezeile in der Studio-Oberfläche wartete der Lauf sonst bis zum Zeitlimit.
+Mit `/dev/null` gilt jede Frage als **Nein**, das Protokoll sagt das
+ausdrücklich. Bewusste Systementscheidungen trifft der Anwender stattdessen
+über die Stufen `STUDIO_REPAIR_BOOTTARGET=1` (setzt `multi-user.target`, nur
+wenn derzeit `graphical.target`) und `STUDIO_REPAIR_OSUPDATES=1`
+(`apt-get update` + `apt-get -y upgrade`, ohne `dist-upgrade`; entsprechend
+dnf/yum/zypper/pacman/apk). Beide sind standardmäßig `0`.
+
 ## Nächster Schritt
 
 → [docs/06-release.md](06-release.md)

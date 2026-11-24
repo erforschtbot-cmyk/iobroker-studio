@@ -24,6 +24,8 @@ STUDIO_REPAIR_NODE="${STUDIO_REPAIR_NODE:-1}"
 STUDIO_REPAIR_CONTROLLER="${STUDIO_REPAIR_CONTROLLER:-1}"
 STUDIO_REPAIR_NATIVE="${STUDIO_REPAIR_NATIVE:-1}"
 STUDIO_REPAIR_ADAPTERS="${STUDIO_REPAIR_ADAPTERS:-1}"
+STUDIO_REPAIR_BOOTTARGET="${STUDIO_REPAIR_BOOTTARGET:-0}"
+STUDIO_REPAIR_OSUPDATES="${STUDIO_REPAIR_OSUPDATES:-0}"
 
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -66,6 +68,7 @@ print_failure_summary() {
 }
 
 run_step() {
+    local result
     local description="$1"
     shift
     STEPS=$((STEPS + 1))
@@ -73,8 +76,10 @@ run_step() {
     if "$@"; then
         ok "$description"
         return 0
+    else
+        result=$?
     fi
-    fail "$description"
+    fail "$description | Exitcode: $result | Funktion: $* | Arbeitsverzeichnis: $PWD"
     return 1
 }
 
@@ -418,11 +423,125 @@ official_fix() {
 
     # Der offizielle Fixer soll wie von ioBroker vorgesehen als angemeldeter
     # Benutzer laufen und bei Bedarf selbst sudo verwenden.
-    bash "$fix_script" 2>&1 | tee "$fix_output"
+    #
+    # Wichtig: stdin kommt aus /dev/null. Der Fixer stellt sonst interaktive
+    # Rueckfragen (Boot-Ziel graphical.target -> multi-user.target, Benutzer-
+    # konto, Zeitzone) im klassischen Modus per "read -n 1". In der Studio-
+    # Oberflaeche gibt es dafuer keine Eingabezeile, der Lauf wartete bis zum
+    # Zeitlimit. Mit /dev/null endet jedes read sofort ohne Zeichen; jede
+    # Ja/Nein-Frage gilt damit als "Nein" und der Fixer laeuft weiter.
+    # Bewusste Entscheidungen (Boot-Ziel, Paketupdates) trifft der Anwender
+    # stattdessen in den Studio-Optionen; das Passwort fuer sudo wurde bereits
+    # oben in detect_root_access freigeschaltet und ist zwischengespeichert.
+    warn "Rueckfragen des offiziellen Fixers werden ohne Eingabe mit 'Nein' beantwortet."
+    warn "Boot-Ziel und Systempakete steuerst du ueber die Studio-Optionen."
+    bash "$fix_script" </dev/null 2>&1 | tee "$fix_output"
     result=${PIPESTATUS[0]}
 
     rm -f "$fix_script" "$fix_output"
     return "$result"
+}
+
+boot_target_state() {
+    if ! have systemctl; then
+        printf 'ohne systemd'
+        return
+    fi
+    systemctl get-default 2>/dev/null || printf 'unbekannt'
+}
+
+repair_boot_target() {
+    local current
+    current="$(boot_target_state)"
+    printf 'Aktuelles Standard-Boot-Ziel: %s\n' "$current"
+    case "$current" in
+    multi-user.target)
+        ok "System startet bereits ohne grafische Oberflaeche (Serverbetrieb)."
+        return 0
+        ;;
+    graphical.target) ;;
+    *)
+        warn "Standard-Boot-Ziel ist nicht eindeutig ermittelbar ($current); es bleibt unveraendert."
+        return 0
+        ;;
+    esac
+
+    if [ "$ROOT_MODE" = none ]; then
+        warn "Ohne Administratorrechte wird das Boot-Ziel nicht umgestellt."
+        return 1
+    fi
+    if ! as_root systemctl set-default multi-user.target; then
+        return 1
+    fi
+    ok "Neues Standard-Boot-Ziel: $(boot_target_state)"
+    warn "Die Umstellung wirkt erst beim naechsten Neustart des Linux-Systems."
+    return 0
+}
+
+os_updates() {
+    if [ "$ROOT_MODE" = none ]; then
+        warn "Ohne Administratorrechte werden keine Systempakete aktualisiert."
+        return 1
+    fi
+
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+
+    if have apt-get; then
+        progress 90 "Aktualisiere Paketlisten …"
+        if ! as_root apt-get update; then
+            return 1
+        fi
+        progress 92 "Installiere Systempakete …"
+        # Nur Upgrade, kein dist-upgrade: keine Release-Wechsel, keine
+        # automatische Deinstallation von Paketen als Nebenwirkung.
+        if ! as_root apt-get -y -o Dpkg::Options::=--force-confdef \
+            -o Dpkg::Options::=--force-confold upgrade; then
+            return 1
+        fi
+        as_root apt-get -y autoremove --purge >/dev/null 2>&1 || true
+        ok "Systempakete sind aktualisiert."
+    elif have dnf; then
+        progress 90 "Aktualisiere Systempakete …"
+        if ! as_root dnf -y upgrade; then
+            return 1
+        fi
+        ok "Systempakete sind aktualisiert."
+    elif have yum; then
+        progress 90 "Aktualisiere Systempakete …"
+        if ! as_root yum -y update; then
+            return 1
+        fi
+        ok "Systempakete sind aktualisiert."
+    elif have zypper; then
+        progress 90 "Aktualisiere Systempakete …"
+        if ! as_root zypper --non-interactive update; then
+            return 1
+        fi
+        ok "Systempakete sind aktualisiert."
+    elif have pacman; then
+        progress 90 "Aktualisiere Systempakete …"
+        if ! as_root pacman -Syu --noconfirm; then
+            return 1
+        fi
+        ok "Systempakete sind aktualisiert."
+    elif have apk; then
+        progress 90 "Aktualisiere Systempakete …"
+        if ! as_root apk upgrade; then
+            return 1
+        fi
+        ok "Systempakete sind aktualisiert."
+    else
+        warn "Kein unterstuetzter Paketmanager gefunden."
+        return 127
+    fi
+
+    if have systemd-detect-virt && systemd-detect-virt --container --quiet; then
+        warn "Container erkannt: ein Neustart des Systems entfaellt hier meist."
+    else
+        printf 'Ein Neustart des Linux-Systems ist nach Kernel-/Bibliotheksupdates empfehlenswert.\n'
+    fi
+    return 0
 }
 
 upgrade_controller() {
@@ -439,34 +558,82 @@ upgrade_controller() {
 rebuild_native_modules() {
     cd "$IOB_DIR" || return 1
     have npm || return 127
-    local module_count
-    local rebuild_pid
-    local rebuild_started
-    local elapsed
-    module_count="$(
-        find "$IOB_DIR/node_modules" -mindepth 1 -maxdepth 1 \
-            ! -name '.bin' -print 2>/dev/null | wc -l
-    )"
+    local module name rebuild_started elapsed done_count=0 failed_count=0 skipped=0
+    local -a candidates=() failed_names=()
+    local seen=0
+    local range_start=72 range_end=88 percent
+
     printf 'Arbeitsverzeichnis: %s\n' "$IOB_DIR"
     printf 'Ausfuehrender Benutzer: %s\n' "$IOB_USER"
-    printf 'Gefundene Top-Level-Module: %s\n' "$module_count"
 
     progress 69 "Prüfe npm-Cache als $IOB_USER …"
-    as_iobroker_user npm cache verify || true
-    progress 72 "Baue native Module als $IOB_USER neu …"
-    rebuild_started="$(date +%s)"
-    as_iobroker_user npm rebuild --foreground-scripts &
-    rebuild_pid=$!
-    while kill -0 "$rebuild_pid" 2>/dev/null; do
-        elapsed=$(($(date +%s) - rebuild_started))
-        progress 72 "npm rebuild in $IOB_DIR – ${elapsed}s …"
-        sleep 2
+    as_iobroker_user npm cache verify || record_issue "npm cache verify fehlgeschlagen | Benutzer: $IOB_USER | Verzeichnis: $IOB_DIR"
+
+    # Nur echte native Module bauen. Ein pauschales "npm rebuild" scheitert am
+    # ersten unbaubaren Modul und laesst alle folgenden unangetastet, obwohl genau
+    # die den neuen Node-ABI brauchen.
+    progress 71 "Ermittle native Module …"
+    for module in "$IOB_DIR"/node_modules/*/; do
+        [ -d "$module" ] || continue
+        name="$(basename "$module")"
+        case "$name" in .bin|.cache) continue ;; esac
+        if [ -f "$module/binding.gyp" ] || ls "$module"/build/Release/*.node >/dev/null 2>&1; then
+            candidates+=("$name")
+        fi
     done
-    wait "$rebuild_pid"
+    # Skalierte Pakete (@scope/name) separat einsammeln.
+    for module in "$IOB_DIR"/node_modules/@*/; do
+        [ -d "$module" ] || continue
+        for sub in "$module"*/; do
+            [ -d "$sub" ] || continue
+            if [ -f "$sub/binding.gyp" ] || ls "$sub"/build/Release/*.node >/dev/null 2>&1; then
+                candidates+=("$(basename "$(dirname "$sub")")/$(basename "$sub")")
+            fi
+        done
+    done
+
+    printf 'Gefundene native Module: %s\n' "${#candidates[@]}"
+    if [ "${#candidates[@]}" -eq 0 ]; then
+        printf 'Keine nativen Module vorhanden; Schritt entfaellt.\n'
+        progress 88 "Keine nativen Module gefunden"
+        return 0
+    fi
+
+    rebuild_started="$(date +%s)"
+    for name in "${candidates[@]}"; do
+        elapsed=$(($(date +%s) - rebuild_started))
+        percent=$((range_start + seen * (range_end - range_start) / ${#candidates[@]}))
+        [ "$percent" -gt "$range_end" ] && percent=$range_end
+        progress "$percent" "Baue $name neu ($((seen + 1))/${#candidates[@]}, ${elapsed}s) …"
+        seen=$((seen + 1))
+        case " ${checked:-} " in *" $name "*) continue ;; esac
+        checked="${checked:-} $name"
+        printf '\n--- npm rebuild %s ---\n' "$name"
+        if as_iobroker_user npm rebuild "$name" --foreground-scripts; then
+            printf '[ OK ] %s neu gebaut\n' "$name"
+            done_count=$((done_count + 1))
+        else
+            printf '[FEHLER] %s konnte nicht gebaut werden\n' "$name"
+            failed_names+=("$name")
+            failed_count=$((failed_count + 1))
+        fi
+    done
+
+    progress "$range_end" "Native Module: $done_count von ${#candidates[@]} neu gebaut"
+    printf '\nErgebnis native Module: %s von %s erfolgreich gebaut, %s fehlgeschlagen.\n' \
+        "$done_count" "${#candidates[@]}" "$failed_count"
+    if [ "$failed_count" -gt 0 ]; then
+        printf 'Nicht baubar: %s\n' "${failed_names[*]}"
+        printf 'Diese Module fehlen ihrer Zielversion entsprechend; andere Module wurden trotzdem gebaut.\n'
+        for name in "${failed_names[@]}"; do
+            record_issue "Native Modul nicht baubar: $name | Node-ABI $(node -p 'process.versions.modules' 2>/dev/null || printf '?') | Verzeichnis: $IOB_DIR/node_modules/$name"
+        done
+    fi
+    return 0
 }
 
 upgrade_adapters() {
-    run_iob update || true
+    run_iob update || record_issue "Adapter-Repository konnte nicht aktualisiert werden (iobroker update)."
     run_iob upgrade -y
 }
 
@@ -508,9 +675,10 @@ is_iobroker_running() {
 headline "ioBroker Tool - universelle Reparatur"
 printf 'Best-Effort-Reparatur ohne Backup und ohne Loeschen von ioBroker-Daten.\n'
 printf 'Protokoll: %s\n' "$LOG_FILE"
-printf 'Auswahl: Basis=%s | Node.js=%s | JS-Controller=%s | Native Module=%s | Adapter=%s\n' \
+printf 'Auswahl: Basis=%s | Node.js=%s | JS-Controller=%s | Native Module=%s | Adapter=%s | Boot-Ziel=%s | Systempakete=%s\n' \
     "$STUDIO_REPAIR_BASE" "$STUDIO_REPAIR_NODE" "$STUDIO_REPAIR_CONTROLLER" \
-    "$STUDIO_REPAIR_NATIVE" "$STUDIO_REPAIR_ADAPTERS"
+    "$STUDIO_REPAIR_NATIVE" "$STUDIO_REPAIR_ADAPTERS" \
+    "$STUDIO_REPAIR_BOOTTARGET" "$STUDIO_REPAIR_OSUPDATES"
 
 progress 2 "Prüfe Administratorrechte …"
 detect_root_access
@@ -520,9 +688,10 @@ detect_iobroker
 # Systemweite Reparaturen duerfen nicht erst nach dem Stoppen feststellen,
 # dass sudo/root fehlt. Der offizielle Fixer und Node-Updater verwenden selbst
 # sudo; deshalb wird deren benoetigte Rechteerhoehung hier verbindlich getestet.
-if { selected "$STUDIO_REPAIR_BASE" || selected "$STUDIO_REPAIR_NODE"; } &&
+if { selected "$STUDIO_REPAIR_BASE" || selected "$STUDIO_REPAIR_NODE" ||
+     selected "$STUDIO_REPAIR_BOOTTARGET" || selected "$STUDIO_REPAIR_OSUPDATES"; } &&
    [ "$ROOT_MODE" = none ]; then
-    echo "FEHLER: Die gewaehlte Basis-/Node-Reparatur benoetigt funktionierendes root, sudo oder doas."
+    echo "FEHLER: Die gewaehlte Basis-/Node-/Boot-Ziel-/Paket-Reparatur benoetigt funktionierendes root, sudo oder doas."
     echo "FEHLER: sudo/doas fehlt, ist nicht erlaubt oder das Passwort wurde abgelehnt."
     echo "HINWEIS: ioBroker wurde nicht gestoppt und keine Reparatur begonnen."
     exit 30
@@ -566,7 +735,22 @@ else
     progress 87 "Adapter-Aktualisierung abgewählt"
     warn "Adapter-Aktualisierung wurde abgewählt."
 fi
-progress 90 "Offizielle ioBroker-Reparaturstufen abgeschlossen"
+if selected "$STUDIO_REPAIR_BOOTTARGET"; then
+    progress 88 "Prüfe Standard-Boot-Ziel …"
+    run_step "Boot-Ziel auf Serverbetrieb umstellen" repair_boot_target || true
+else
+    if [ "$(boot_target_state)" = graphical.target ]; then
+        warn "System startet in graphical.target (mit Desktop). Bei einem reinen Server"
+        warn "laesst sich das ueber die Reparaturstufe 'Boot-Ziel auf Serverbetrieb' umstellen."
+    fi
+fi
+if selected "$STUDIO_REPAIR_OSUPDATES"; then
+    progress 89 "Aktualisiere Systempakete …"
+    run_step "Systempakete aktualisieren" os_updates || true
+else
+    warn "Aktualisierung der Systempakete wurde abgewählt."
+fi
+progress 94 "Offizielle ioBroker-Reparaturstufen abgeschlossen"
 progress 96 "Starte ioBroker …"
 run_step "ioBroker starten" start_iobroker || true
 

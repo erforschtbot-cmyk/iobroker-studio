@@ -22,7 +22,7 @@ und jede Checkbox hat einen Tooltip.
 | **Backup** | Packt `iobroker-data`, `node_modules` und Paketinformationen in ein Archiv; optional Download nach Windows |
 | **Restore (Datei)** | Lädt ein Archiv hoch, stoppt ioBroker, entpackt direkt nach `/opt/iobroker`, startet ioBroker |
 | **Checkpoint** | Schneller Linux-Checkpoint unter `/opt/iobroker/.studio-checkpoint`; optional einmalig als Datei exportiert |
-| **Reparatur & Upgrade** | Auswahl: Basisreparatur, Node.js, JS-Controller, native Module, Adapter. Diagnose, Stoppen, Endkontrolle und Wiederstart laufen immer |
+| **Reparatur & Upgrade** | Auswahl: Basisreparatur, Node.js, JS-Controller, native Module, Adapter, Boot-Ziel auf Serverbetrieb, Systempakete. Diagnose, Stoppen, Endkontrolle und Wiederstart laufen immer |
 | **Diagnose** | Führt `iob diag` aus, sendet das nötige Enter automatisch, zeigt die unveränderte Ausgabe live |
 | **Integriertes Terminal** | Vollständiges SSH-Terminal; per Pfeilbutton in eigenes Fenster abdockbar |
 | **PuTTY** | Direkter Schnellzugriff über mitgeliefertes `putty.exe` |

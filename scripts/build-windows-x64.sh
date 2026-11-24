@@ -24,8 +24,12 @@ mkdir -p "$WORK/Next" "$WORK/Programm/Programm"
 cp -a "$ROOT/Next/IoBrokerTool" "$WORK/Next/IoBrokerTool"
 cp -a "$ROOT/Programm/Programm/." "$WORK/Programm/Programm/"
 
-echo "==> Restore (locked mode)"
-"$DOTNET" restore "$WORK/Next/IoBrokerTool/IoBrokerTool.csproj" --locked-mode
+echo "==> Restore (locked mode, Ziel-RID win-x64)"
+# Die Sperrdatei enthaelt nur den Ziel-RID net8.0/win-x64. Ohne die explizite
+# RuntimeIdentifier-Angabe vergleicht NuGet gegen net8.0 und bricht mit NU1004 ab
+# ("Die Runtimebezeichner des Projekts wurden geaendert").
+"$DOTNET" restore "$WORK/Next/IoBrokerTool/IoBrokerTool.csproj" \
+    --locked-mode -p:RuntimeIdentifier=win-x64 -p:PublishSingleFile=true
 
 echo "==> Publish (win-x64, self-contained, single file)"
 "$DOTNET" publish "$WORK/Next/IoBrokerTool/IoBrokerTool.csproj" \

@@ -70,14 +70,32 @@ select_access_mode() {
     return 0
 }
 
+# GNU find stellt beim Programmende sein Startverzeichnis per fchdir wieder her.
+# Ist das Home des SSH-Benutzers fuer iobroker gesperrt (z. B. /home/pi mit Modus
+# 700), scheitert find mit Exitcode 1 ("Failed to restore initial working
+# directory: /home/pi: Permission denied"), obwohl die Quelle vollstaendig lesbar
+# ist. Pruefungen laufen deshalb immer aus einem neutralen Arbeitsverzeichnis.
+as_iobroker_in_root() {
+    as_iobroker sh -c 'cd / && exec "$@"' sh "$@"
+}
+
 verify_source_access() {
+    local source_path failed=0
+    local -a scan_status
+    progress 1 "Pruefe Lese- und Verzeichniszugriff als $IOB_USER …"
     for source_path in "$IOB_DIR/iobroker-data" "$IOB_DIR/node_modules"; do
         [ -e "$source_path" ] || continue
-        as_iobroker find "$source_path" -xdev -print >/dev/null 2>&1 || {
-            echo "FEHLER: Mindestens ein Eintrag unter $source_path ist nicht lesbar."
-            return 1
-        }
+        # find allein prueft keine Leserechte von Dateien. Symlinks werden
+        # wie bei cp -a nicht verfolgt. stderr enthaelt auch gesperrte Eltern.
+        as_iobroker_in_root find "$source_path" -xdev \( \( -type f ! -readable \) -o \( -type d \( ! -readable -o ! -executable \) \) \) \
+            -printf 'FEHLER: Zugriff fehlt | Pfad: %p | Rechte: %M | Besitzer: %u:%g\n' 2>&1 | awk '{ print; fflush(); failed=1 } END { exit failed }'
+        scan_status=("${PIPESTATUS[@]}")
+        if [ "${scan_status[0]}" -ne 0 ] || [ "${scan_status[1]}" -ne 0 ]; then
+            printf 'FEHLER: Schritt Quellenpruefung | Benutzer: %s | Quelle: %s | find-Exitcode: %s\n' "$IOB_USER" "$source_path" "${scan_status[0]}"
+            failed=1
+        fi
     done
+    return "$failed"
 }
 
 copy_tree() {
@@ -116,14 +134,14 @@ select_access_mode || exit 12
 verify_source_access || exit 13
 # Reste der frueheren Mehrfach-Sicherungslogik entfernen. Dauerhaft soll nur
 # der eine Checkpoint-Ordner existieren.
-as_iobroker rm -f "$IOB_DIR/.studio-checkpoint.tar.gz" "$IOB_DIR/.studio-checkpoint.tar.gz.new" 2>/dev/null || true
-as_iobroker rm -rf "$IOB_DIR/.studio-state-before-rollback" 2>/dev/null || true
-as_iobroker rm -rf "$IOB_DIR/.studio-restore-temp" 2>/dev/null || true
+as_iobroker rm -f "$IOB_DIR/.studio-checkpoint.tar.gz" "$IOB_DIR/.studio-checkpoint.tar.gz.new" || true
+as_iobroker rm -rf "$IOB_DIR/.studio-state-before-rollback" || true
+as_iobroker rm -rf "$IOB_DIR/.studio-restore-temp" || true
 PREFLIGHT="$IOB_DIR/.studio-checkpoint-preflight-$$"
-as_iobroker mkdir "$PREFLIGHT" 2>/dev/null &&
-    as_iobroker sh -c "printf test > '$PREFLIGHT/write-test'" 2>/dev/null &&
-    as_iobroker rm -rf "$PREFLIGHT" 2>/dev/null || {
-        as_root rm -rf "$PREFLIGHT" 2>/dev/null || true
+as_iobroker mkdir "$PREFLIGHT" &&
+    as_iobroker sh -c "printf test > '$PREFLIGHT/write-test'" &&
+    as_iobroker rm -rf "$PREFLIGHT" || {
+        as_root rm -rf "$PREFLIGHT" || true
         echo "FEHLER: Reeller Schreibtest in $IOB_DIR fehlgeschlagen. ioBroker wurde nicht gestoppt."
         exit 14
     }
@@ -194,7 +212,10 @@ fi
 as_iobroker rm -rf "$OLD_CHECKPOINT" || true
 
 progress 93 "Prüfe Checkpoint-Dateibesitzer …"
-wrong_owner="$(as_iobroker find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit 2>/dev/null || true)"
+wrong_owner="$(as_iobroker_in_root find "$CHECKPOINT" -xdev ! -user "$IOB_USER" -print -quit)" || {
+    echo "FEHLER: Die Besitzerpruefung des Checkpoints konnte nicht ausgefuehrt werden."
+    exit 10
+}
 [ -z "$wrong_owner" ] || { echo "FEHLER: Checkpoint-Datei gehoert nicht iobroker: $wrong_owner"; exit 10; }
 
 progress 96 "Starte ioBroker …"

@@ -31,8 +31,8 @@ progress() {
 }
 
 select_read_mode() {
-    if find "$IOB_DIR/iobroker-data" -xdev -print >/dev/null 2>&1 &&
-       { [ ! -d "$IOB_DIR/node_modules" ] || find "$IOB_DIR/node_modules" -xdev -print >/dev/null 2>&1; }; then
+    if find "$IOB_DIR/iobroker-data" -xdev -print >/dev/null &&
+       { [ ! -d "$IOB_DIR/node_modules" ] || find "$IOB_DIR/node_modules" -xdev -print >/dev/null; }; then
         ROOT_MODE=none
         echo "Backup liest die Daten direkt als Benutzer $(id -un); keine Rechteerhoehung noetig."
         return 0
@@ -55,13 +55,13 @@ select_read_mode || exit 7
 
 # Das Downloadarchiv muss dem SSH-/SFTP-Benutzer gehoeren. Root darf einen
 # fehlenden Schreibzugriff im Temp-Verzeichnis deshalb nicht verdecken.
-if ! rm -f "$ARCHIVE" 2>/dev/null; then
-    as_root rm -f "$ARCHIVE" 2>/dev/null || {
+if ! rm -f "$ARCHIVE"; then
+    as_root rm -f "$ARCHIVE" || {
         echo "FEHLER: Die temporaere Backup-Datei $ARCHIVE kann nicht ersetzt werden."
         exit 8
     }
 fi
-: > "$ARCHIVE" 2>/dev/null || {
+: > "$ARCHIVE" || {
     echo "FEHLER: Der angemeldete Benutzer darf $ARCHIVE nicht anlegen."
     echo "HINWEIS: Bitte Schreibrechte/Temp-Verzeichnis des fremden Linux-Systems pruefen. ioBroker wurde nicht gestoppt."
     exit 8

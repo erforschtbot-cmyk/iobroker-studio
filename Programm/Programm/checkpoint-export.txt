@@ -25,7 +25,7 @@ progress() {
     exit 2
 }
 
-if find "$CHECKPOINT" -xdev -print >/dev/null 2>&1; then
+if find "$CHECKPOINT" -xdev -print >/dev/null; then
     ROOT_MODE=none
 elif [ "$(id -u)" -eq 0 ]; then ROOT_MODE=root
 elif command -v sudo >/dev/null 2>&1 && (sudo -n true 2>/dev/null || sudo -v); then ROOT_MODE=sudo
@@ -35,7 +35,7 @@ else
     exit 7
 fi
 
-rm -f "$ARCHIVE" 2>/dev/null || {
+rm -f "$ARCHIVE" || {
     echo "FEHLER: Die temporaere Download-Datei kann nicht ersetzt werden."
     exit 8
 }

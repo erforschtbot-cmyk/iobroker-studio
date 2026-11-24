@@ -4,7 +4,7 @@ Professionelles Windows-Desktop-Werkzeug zur Wartung entfernter ioBroker-Install
 über SSH: Backup/Restore, Checkpoints, Reparatur/Upgrade, Systemdiagnose,
 Image-/Neuinstallation und ein integriertes SSH-Terminal.
 
-**Autor:** Elzershark · **Stand:** 1.2.28
+**Autor:** Elzershark · **Stand:** 1.2.39
 
 ---
 
@@ -77,7 +77,11 @@ Details: [docs/03-struktur.md](docs/03-struktur.md)
 ## Wiederherstellungsanker
 
 `release/ioBroker-Studio-1.2.28-Windows-x64.zip` ist die zum Stand 1.2.28 tatsächlich
-ausgelieferte, **geprüfte** Anwendung. Sie dient als Rückweg, falls ein Neuaufbau aus
+ausgelieferte, **geprüfte** Anwendung. `release/ioBroker-Studio-1.2.30-Windows-x64.zip`
+enthält die korrigierte Quellenprüfung (Fehlalarm bei gesperrtem Home-Verzeichnis,
+siehe [docs/08-live-fehlerdetails.md](docs/08-live-fehlerdetails.md)).
+
+Die 1.2.28 ist die Sie dient als Rückweg, falls ein Neuaufbau aus
 dem Quellcode einmal nicht gelingen sollte. Prüfsumme siehe `CHECKSUMS.sha256`.
 
 Der Ordner `Programm/` enthält die Windows-Programme `putty.exe`, `plink.exe`, `pscp.exe`

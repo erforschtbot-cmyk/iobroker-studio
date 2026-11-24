@@ -98,7 +98,7 @@ if ! wait "$extract_pid"; then
     exit 6
 fi
 
-as_iobroker rm -f "$IOB_DIR/created-at" 2>/dev/null || true
+as_iobroker rm -f "$IOB_DIR/created-at" || true
 if [ ! -d "$IOB_DIR/iobroker-data" ]; then
     undo_restore
     echo "FEHLER: Nach dem Entpacken fehlt iobroker-data."
@@ -114,8 +114,8 @@ if ! start_iobroker; then
 fi
 
 progress 97 "ioBroker läuft – entferne temporäre Arbeitsdateien …"
-as_iobroker rm -rf "$RESTORE_TEMP" 2>/dev/null || true
-rm -f "$ARCHIVE" 2>/dev/null || as_root rm -f "$ARCHIVE" 2>/dev/null || true
+as_iobroker rm -rf "$RESTORE_TEMP" || true
+rm -f "$ARCHIVE" || as_root rm -f "$ARCHIVE" || true
 progress 100 "Fertig – Backup direkt entpackt und ioBroker gestartet"
 echo "Wiederherstellung erfolgreich abgeschlossen."
 IOBROKER_TOOL_DIRECT_RESTORE

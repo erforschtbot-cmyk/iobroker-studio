@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using IoBrokerTool.Models;
@@ -18,6 +19,11 @@ public sealed class SshService
         new(@"(?:\[sudo\]\s*)?(?:(?:password|passwort|mot de passe|contrase(?:ñ|n)a)" +
             @".*?:|doas.*?(?:password|passwort).*?:)\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex PrivilegePasswordRejected =
+        new(@"(?i)(authentication failure|sorry, try again|incorrect password|invalid password|" +
+            @"passwort.*(falsch|ungueltig|ungültig)|try again|3 incorrect)",
+            RegexOptions.Compiled);
+    private const int MaxPasswordAttempts = 3;
     private const string BeginMarker = "__IOBROKER_STUDIO_BEGIN__";
     public Func<string, CancellationToken, Task<string?>>? PrivilegePasswordRequested { get; set; }
 
@@ -105,16 +111,14 @@ public sealed class SshService
             using var client = CreateClient(profile, false, _ => { });
             client.Connect();
             var remotePath = $"/tmp/iobroker-studio-{Guid.NewGuid():N}.sh";
+            var payload = Encoding.UTF8.GetBytes(script.Replace("\r\n", "\n"));
+            var expectedHash = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
 
-            using (var sftp = CreateSftpClient(profile))
-            {
-                sftp.Connect();
-                using var content = new MemoryStream(Encoding.UTF8.GetBytes(script.Replace("\r\n", "\n")));
-                sftp.UploadFile(content, remotePath);
-                // SSH.NET expects chmod digits (700), not the decimal value of 0700 (448).
-                sftp.ChangePermissions(remotePath, 700);
-                sftp.Disconnect();
-            }
+            // Ein einzelnes verlorenes Byte macht aus "if selected" ein "f selected"
+            // und laesst bash mitten im Lauf mit Exitcode 2 sterben. Vor dem Start
+            // wird deshalb geprueft, ob die Datei unveraendert angekommen ist.
+            UploadVerified(profile, remotePath, payload, expectedHash, onOutput);
+            AssertSyntax(client, remotePath, expectedHash, onOutput);
 
             using var shell = client.CreateShellStream("xterm", 120, 40, 1280, 800, 32768);
             var markerCommand =
@@ -126,6 +130,8 @@ public sealed class SshService
 
             var allOutput = new StringBuilder();
             var lastPasswordPromptAt = -1;
+            var passwordAttempts = 0;
+            var passwordSentAt = -1;
             var deliveredLength = -1;
             var started = Stopwatch.StartNew();
 
@@ -160,7 +166,35 @@ public sealed class SshService
                                         throw new OperationCanceledException(
                                             "Passworteingabe wurde abgebrochen.", cancellationToken);
                                     shell.WriteLine(password);
+                                    passwordAttempts++;
+                                    passwordSentAt = completeOutput.Length;
                                 }
+                            }
+
+                            // Ein falsches Passwort darf den Lauf nicht beenden: erneut fragen,
+                            // solange Versuche uebrig sind und sudo noch nicht aufgegeben hat.
+                            if (passwordSentAt >= 0 && absoluteFailureAt(completeOutput, passwordSentAt))
+                            {
+                                if (passwordAttempts >= MaxPasswordAttempts)
+                                {
+                                    throw new InvalidOperationException(
+                                        "Administrator-Passwort wurde " + passwordAttempts +
+                                        "-mal abgelehnt. Es wurde nichts verändert. Bitte die richtigen " +
+                                        "sudo-Rechte prüfen und den Vorgang erneut starten.");
+                                }
+                                // Genau einen neuen Versuch anfordern. Ein weiterer Fehlschlag
+                                // laeuft wieder durch diese Pruefung, bis das Limit erreicht ist.
+                                passwordSentAt = -1;
+                                var retry = PrivilegePasswordRequested is null
+                                    ? null
+                                    : PrivilegePasswordRequested(profile.Username, cancellationToken)
+                                        .GetAwaiter().GetResult();
+                                if (retry is null)
+                                    throw new OperationCanceledException(
+                                        "Passworteingabe wurde abgebrochen.", cancellationToken);
+                                shell.WriteLine(retry);
+                                passwordAttempts++;
+                                passwordSentAt = completeOutput.Length;
                             }
 
                             if (deliveredLength < 0)
@@ -173,9 +207,21 @@ public sealed class SshService
 
                             var match = ExitMarker.Match(completeOutput);
                             var visibleEnd = match.Success ? match.Index : completeOutput.Length;
+                            // Deliver complete lines so split SSH packets cannot hide
+                            // error keywords, paths or structured progress records.
+                            if (!match.Success)
+                                visibleEnd = completeOutput.LastIndexOf('\n') + 1;
                             if (deliveredLength >= 0 && visibleEnd > deliveredLength)
                             {
-                                onOutput(completeOutput[deliveredLength..visibleEnd]);
+                                var outputLines = completeOutput[deliveredLength..visibleEnd].Split('\n');
+                                for (var lineIndex = 0; lineIndex < outputLines.Length; lineIndex++)
+                                {
+                                    var line = outputLines[lineIndex];
+                                    if (lineIndex < outputLines.Length - 1)
+                                        onOutput(line + "\n");
+                                    else if (line.Length > 0)
+                                        onOutput(line);
+                                }
                                 deliveredLength = visibleEnd;
                             }
 
@@ -202,6 +248,77 @@ public sealed class SshService
                 }
             }
         }, cancellationToken);
+    }
+
+    private static bool absoluteFailureAt(string output, int since)
+    {
+        if (since < 0 || since >= output.Length) return false;
+        var window = output[Math.Max(0, since - 40)..];
+        var lastPrompt = PrivilegePasswordPrompt.Matches(window).LastOrDefault();
+        var relevant = lastPrompt is null ? window : window[(lastPrompt.Index + lastPrompt.Length)..];
+        return PrivilegePasswordRejected.IsMatch(relevant);
+    }
+
+    private const int UploadAttempts = 3;
+
+    private static void UploadVerified(
+        ConnectionProfile profile,
+        string remotePath,
+        byte[] payload,
+        string expectedHash,
+        Action<string> onOutput)
+    {
+        for (var attempt = 1; attempt <= UploadAttempts; attempt++)
+        {
+            using (var sftp = CreateSftpClient(profile))
+            {
+                sftp.Connect();
+                using var content = new MemoryStream(payload);
+                sftp.UploadFile(content, remotePath);
+                // SSH.NET expects chmod digits (700), not the decimal value of 0700 (448).
+                sftp.ChangePermissions(remotePath, 700);
+                sftp.Disconnect();
+            }
+
+            using var client = CreateClient(profile, false, _ => { });
+            client.Connect();
+            var hashCommand = client.RunCommand($"sha256sum '{remotePath}'");
+            var remoteHash = hashCommand.Result.Trim().Split(' ')[0].ToLowerInvariant();
+            client.Disconnect();
+
+            if (remoteHash == expectedHash)
+            {
+                onOutput($"[Pruefung] Skriptübertragung unverändert angekommen (SHA-256 {expectedHash[..12]}…).\n");
+                return;
+            }
+
+            onOutput($"[Pruefung] Skriptübertragung abweichend (Versuch {attempt}/{UploadAttempts}): " +
+                     $"erwartet {expectedHash[..12]}…, erhalten {remoteHash[..Math.Min(12, remoteHash.Length)]}….\n");
+        }
+
+        throw new InvalidOperationException(
+            "Das Skript kam nicht unverändert auf dem Zielsystem an. " +
+            "Die Aktion wurde abgebrochen, bevor irgendetwas verändert wurde.");
+    }
+
+    private static void AssertSyntax(
+        SshClient client,
+        string remotePath,
+        string expectedHash,
+        Action<string> onOutput)
+    {
+        var check = client.RunCommand($"bash -n '{remotePath}' 2>&1");
+        if (check.ExitStatus == 0)
+        {
+            onOutput("[Pruefung] Syntaxpruefung bestanden, Skript wird gestartet.\n");
+            return;
+        }
+
+        var detail = check.Result.Trim();
+        client.RunCommand($"rm -f '{remotePath}'");
+        throw new InvalidOperationException(
+            "Das Skript ist nach der Übertragung syntaktisch fehlerhaft und wurde nicht gestartet.\n" +
+            $"SHA-256 der übertragenen Datei: {expectedHash[..12]}…\n{detail}");
     }
 
     public async Task UploadFileAsync(
