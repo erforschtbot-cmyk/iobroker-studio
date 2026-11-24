@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/banner.png" alt="ioBroker Studio – System Management Console" width="100%">
+</p>
+
 # ioBroker Studio
 
 Professionelles Windows-Desktop-Werkzeug zur Wartung entfernter ioBroker-Installationen
