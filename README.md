@@ -8,6 +8,20 @@ Image-/Neuinstallation und ein integriertes SSH-Terminal.
 
 ---
 
+## Download (fertige Windows-Version)
+
+Kein .NET nötig — ZIP entpacken und `ioBroker Studio.exe` starten.
+
+**[ioBroker-Studio-1.2.39-Windows-x64.zip herunterladen](https://github.com/erforschtbot-cmyk/iobroker-studio/raw/main/download/ioBroker-Studio-1.2.39-Windows-x64.zip)**
+(45,8 MB, self-contained Windows x64)
+
+SHA-256: `b15de2ae62ffe4dc2aa99a22ff30c3e9e70fea574f3676bb95d027410bf37fb7`
+(siehe auch `download/SHA256SUMS.txt`)
+
+Release-Seite: <https://github.com/erforschtbot-cmyk/iobroker-studio/releases/tag/v1.2.39>
+
+---
+
 ## Zweck dieses Repositories
 
 Dieses Repository ist eine **reproduzierbare Baseline**. Ein fremder Agent oder

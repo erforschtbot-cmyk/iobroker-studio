@@ -1,0 +1,1 @@
+b15de2ae62ffe4dc2aa99a22ff30c3e9e70fea574f3676bb95d027410bf37fb7  download/ioBroker-Studio-1.2.39-Windows-x64.zip
